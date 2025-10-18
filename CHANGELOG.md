@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2025-10-19
+
+### Fixed
+- Corrected the PyPI trusted publisher configuration to use the `pypi` environment.
+
+
 ## [0.1.0] - 2024-07-19
 
 ### Added

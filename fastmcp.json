@@ -1,0 +1,10 @@
+{
+  "entrypoint": "src/source_coop_mcp/server.py",
+  "environment": {
+    "dependencies": [
+      "obstore>=0.8.2",
+      "httpx>=0.28.1",
+      "pydantic>=2.12.3"
+    ]
+  }
+}

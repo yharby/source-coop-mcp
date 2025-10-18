@@ -1,0 +1,57 @@
+[project]
+name = "source-coop-mcp"
+version = "0.1.0"
+description = "MCP server for Source Cooperative auto-discovery and data exploration"
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.12"
+authors = [
+    {name = "yharby", email = "me@youssefharby.com"}
+]
+license = {text = "MIT"}
+keywords = ["mcp", "source-cooperative", "object-storage", "s3", "geospatial", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+dependencies = [
+    "fastmcp>=2.12.5",
+    "httpx>=0.28.1",
+    "obstore>=0.8.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/yharby/source-coop-mcp"
+Repository = "https://github.com/yharby/source-coop-mcp"
+Documentation = "https://github.com/yharby/source-coop-mcp#readme"
+Issues = "https://github.com/yharby/source-coop-mcp/issues"
+Changelog = "https://github.com/yharby/source-coop-mcp/blob/main/CHANGELOG.md"
+
+[project.scripts]
+source-coop-mcp = "source_coop_mcp.server:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.1",
+]

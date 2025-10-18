@@ -8,15 +8,14 @@ import obstore as obs
 from obstore.store import S3Store
 import httpx
 from typing import Optional, List, Dict
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 import logging
 import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Initialize FastMCP server
-mcp = FastMCP("source-coop")
 
 # Configuration Constants
 DEFAULT_BUCKET = "us-west-2.opendata.source.coop"
@@ -48,8 +47,8 @@ http_client: Optional[httpx.AsyncClient] = None
 # ============================================================================
 
 
-@mcp.lifespan()
-async def lifespan():
+@asynccontextmanager
+async def lifespan(app: FastMCP) -> AsyncIterator[None]:
     """Manage server lifecycle - initialize and cleanup resources"""
     global http_client
 
@@ -65,6 +64,10 @@ async def lifespan():
     if http_client:
         await http_client.aclose()
         logger.info("HTTP client closed")
+
+
+# Initialize FastMCP server with lifespan
+mcp = FastMCP("source-coop", lifespan=lifespan)
 
 
 # ============================================================================

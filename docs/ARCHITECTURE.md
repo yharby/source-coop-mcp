@@ -191,11 +191,14 @@ featured = await get_featured_products()
 
 ## Lifecycle Management
 
-The server uses FastMCP 2.x lifecycle management pattern:
+The server uses FastMCP lifecycle management with `@asynccontextmanager`:
 
 ```python
-@mcp.lifespan()
-async def lifespan():
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+
+@asynccontextmanager
+async def lifespan(app: FastMCP) -> AsyncIterator[None]:
     global http_client
 
     # Startup - Initialize resources
@@ -208,12 +211,16 @@ async def lifespan():
     logger.info("Shutting down Source Cooperative MCP Server")
     if http_client:
         await http_client.aclose()
+
+# Initialize FastMCP server with lifespan
+mcp = FastMCP("source-coop", lifespan=lifespan)
 ```
 
 This ensures:
-- HTTP client is properly initialized
+- HTTP client is properly initialized on startup
 - Resources are cleaned up on shutdown
 - No resource leaks in long-running servers
+- Compatible with FastMCP 2.12.5+
 
 ## Data Flow Diagrams
 

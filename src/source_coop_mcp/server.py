@@ -210,7 +210,8 @@ async def list_products_from_s3(account_id: str, include_file_count: bool = Fals
         logger.info(f"Listing products for {account_id} from S3 using obstore")
 
         # List all directories under account_id/ using delimiter
-        result = obs.list_with_delimiter(default_store, prefix=f"{account_id}/")
+        # Use async version for better performance
+        result = await obs.list_with_delimiter_async(default_store, prefix=f"{account_id}/")
 
         # Extract common prefixes (these are product directories)
         common_prefixes = result.get("common_prefixes", [])
@@ -230,7 +231,8 @@ async def list_products_from_s3(account_id: str, include_file_count: bool = Fals
             # Optionally count files
             if include_file_count:
                 try:
-                    file_result = obs.list_with_delimiter(default_store, prefix=prefix)
+                    # Use async version for better performance
+                    file_result = await obs.list_with_delimiter_async(default_store, prefix=prefix)
                     file_count = len(
                         [
                             obj
@@ -317,7 +319,8 @@ async def get_product_details(
                 logger.info(f"Fetching README for: {path_prefix}")
 
                 # List files in product root only (non-recursive)
-                result = obs.list_with_delimiter(default_store, prefix=path_prefix)
+                # Use async version for better performance
+                result = await obs.list_with_delimiter_async(default_store, prefix=path_prefix)
                 objects = result.get("objects", [])
 
                 # Look for README files (case-insensitive)
@@ -375,23 +378,29 @@ async def get_product_details(
 
 @mcp.tool()
 async def list_product_files(
-    account_id: str, product_id: str, prefix: str = "", max_files: int = 1000
-) -> List[Dict]:
+    account_id: str,
+    product_id: str,
+    prefix: str = "",
+    max_files: int = 1000,
+    show_tree: bool = False
+) -> Dict:
     """
     List all files in a product with full S3 paths ready for analysis.
+    Optionally show a hierarchical tree visualization with full paths.
 
     Args:
         account_id: Account ID
         product_id: Product ID
         prefix: Optional prefix to filter files (subdirectory path)
         max_files: Maximum files to return (default 1000)
+        show_tree: If True, include tree visualization with full S3 paths (default False)
 
     Returns:
-        List of files with s3_uri, http_url, size, last_modified, etag
+        Dict with files list, optional tree, directories, and statistics
 
-    Example:
-        >>> files = await list_product_files("harvard-lil", "gov-data", "metadata/")
-        >>> print(files[0])
+    Example (List mode):
+        >>> result = await list_product_files("harvard-lil", "gov-data", "metadata/")
+        >>> print(result["files"][0])
         {
             "key": "harvard-lil/gov-data/metadata/metadata.jsonl.zip",
             "s3_uri": "s3://us-west-2.opendata.source.coop/harvard-lil/gov-data/metadata/metadata.jsonl.zip",
@@ -400,6 +409,17 @@ async def list_product_files(
             "last_modified": "2025-02-06T16:20:22+00:00",
             "etag": "..."
         }
+
+    Example (Tree mode):
+        >>> result = await list_product_files("harvard-lil", "gov-data", show_tree=True)
+        >>> print(result["tree"])
+        s3://us-west-2.opendata.source.coop/harvard-lil/gov-data/
+        ├── README.md (5.2 KB) → s3://us-west-2.opendata.source.coop/harvard-lil/gov-data/README.md
+        ├── metadata/
+        │   ├── metadata.jsonl.zip (965.4 MB) → s3://.../metadata/metadata.jsonl.zip
+        │   └── checksums.txt (1.2 KB)
+        └── data/
+            └── datasets.parquet (128.5 MB)
     """
     try:
         path_prefix = f"{account_id}/{product_id}/"
@@ -408,35 +428,174 @@ async def list_product_files(
 
         logger.info(f"Listing files with prefix: {path_prefix} using obstore")
 
-        # Use default store (all products currently in same bucket)
-        # TODO: Extract bucket/region from product metadata if products use different mirrors
-        result = obs.list_with_delimiter(default_store, prefix=path_prefix)
+        if show_tree:
+            # Recursive listing for tree view
+            stream = obs.list(default_store, prefix=path_prefix, chunk_size=1000)
 
-        # Extract objects list from result dict
-        objects = result.get("objects", [])
+            all_files = []
+            async for batch in stream:
+                for obj_meta in batch:
+                    location = obj_meta.get("path", "")
 
-        files = []
-        for obj_meta in objects[:max_files]:
-            # obj_meta is a dict
-            location = obj_meta.get("path", "")
+                    # Skip directory markers
+                    if location.endswith("/"):
+                        continue
 
-            # Skip directory markers
-            if location.endswith("/"):
-                continue
+                    all_files.append({
+                        "key": location,
+                        "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
+                        "http_url": f"{DATA_PROXY}/{location}",
+                        "size": obj_meta.get("size", 0),
+                        "last_modified": str(obj_meta.get("last_modified", "")),
+                        "etag": obj_meta.get("e_tag"),
+                    })
 
-            files.append(
-                {
+                    if len(all_files) >= max_files:
+                        break
+
+                if len(all_files) >= max_files:
+                    break
+
+            # Build tree structure
+            tree_dict = {}
+            total_size = 0
+
+            for file_info in all_files:
+                path = file_info["key"]
+                size = file_info["size"]
+                total_size += size
+
+                # Split path into parts (remove prefix)
+                relative_path = path[len(path_prefix):]
+                parts = relative_path.split("/")
+
+                # Build nested dictionary
+                current = tree_dict
+                for part in parts[:-1]:  # All parts except filename
+                    if part not in current:
+                        current[part] = {}
+                    current = current[part]
+
+                # Add file with metadata
+                filename = parts[-1]
+                current[filename] = {"size": size, "s3_uri": file_info["s3_uri"]}
+
+            # Helper functions
+            def format_size(bytes_size):
+                """Convert bytes to human-readable format"""
+                for unit in ["B", "KB", "MB", "GB", "TB"]:
+                    if bytes_size < 1024.0:
+                        return f"{bytes_size:.1f} {unit}"
+                    bytes_size /= 1024.0
+                return f"{bytes_size:.1f} PB"
+
+            def build_tree_lines(node, prefix="", current_path=""):
+                """Recursively build tree visualization with full S3 paths"""
+                lines = []
+                items = sorted(node.items())
+
+                for i, (name, value) in enumerate(items):
+                    is_last = i == len(items) - 1
+                    connector = "└── " if is_last else "├── "
+                    extension = "    " if is_last else "│   "
+
+                    item_path = f"{current_path}/{name}" if current_path else name
+
+                    if isinstance(value, dict) and "size" in value:
+                        # File
+                        size_str = format_size(value["size"])
+                        lines.append(f"{prefix}{connector}{name} ({size_str}) → {value['s3_uri']}")
+                    else:
+                        # Directory
+                        dir_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{item_path}/"
+                        lines.append(f"{prefix}{connector}{name}/ → {dir_s3_path}")
+
+                        # Recurse into subdirectory
+                        lines.extend(build_tree_lines(value, prefix + extension, item_path))
+
+                return lines
+
+            # Build tree string
+            root_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}"
+            tree_lines = [root_path]
+            tree_lines.extend(build_tree_lines(tree_dict))
+            tree_str = "\n".join(tree_lines)
+
+            # Get directory list
+            directories = []
+            def extract_dirs(node, current_path=""):
+                for name, value in node.items():
+                    if isinstance(value, dict) and "size" not in value:
+                        dir_path = f"{current_path}/{name}" if current_path else name
+                        full_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{dir_path}/"
+                        directories.append({
+                            "name": name,
+                            "path": f"{path_prefix}{dir_path}/",
+                            "s3_uri": full_s3_path
+                        })
+                        extract_dirs(value, dir_path)
+
+            extract_dirs(tree_dict)
+
+            return {
+                "files": all_files,
+                "directories": directories,
+                "tree": tree_str,
+                "stats": {
+                    "total_files": len(all_files),
+                    "total_directories": len(directories),
+                    "total_size": total_size,
+                    "total_size_human": format_size(total_size),
+                    "truncated": len(all_files) >= max_files
+                }
+            }
+
+        else:
+            # Simple list with delimiter (current behavior)
+            # Use async version for better performance
+            result = await obs.list_with_delimiter_async(default_store, prefix=path_prefix)
+
+            # Extract objects and common_prefixes
+            objects = result.get("objects", [])
+            common_prefixes = result.get("common_prefixes", [])
+
+            files = []
+            for obj_meta in objects[:max_files]:
+                location = obj_meta.get("path", "")
+
+                # Skip directory markers
+                if location.endswith("/"):
+                    continue
+
+                files.append({
                     "key": location,
                     "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
                     "http_url": f"{DATA_PROXY}/{location}",
                     "size": obj_meta.get("size", 0),
                     "last_modified": str(obj_meta.get("last_modified", "")),
                     "etag": obj_meta.get("e_tag"),
-                }
-            )
+                })
 
-        logger.info(f"Found {len(files)} files")
-        return files
+            # Extract directories from common prefixes
+            directories = []
+            for prefix_path in common_prefixes:
+                dir_name = prefix_path.rstrip("/").split("/")[-1]
+                directories.append({
+                    "name": dir_name,
+                    "path": prefix_path,
+                    "s3_uri": f"s3://{DEFAULT_BUCKET}/{prefix_path}"
+                })
+
+            logger.info(f"Found {len(files)} files and {len(directories)} directories")
+
+            return {
+                "files": files,
+                "directories": directories,
+                "stats": {
+                    "total_files": len(files),
+                    "total_directories": len(directories)
+                }
+            }
 
     except Exception as e:
         logger.error(f"Error listing files: {e}")

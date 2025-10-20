@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 import logging
 import os
+from importlib.metadata import version, PackageNotFoundError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +54,12 @@ async def lifespan(app: FastMCP) -> AsyncIterator[None]:
     global http_client
 
     # Startup
+    try:
+        pkg_version = version("source-coop-mcp")
+        logger.info(f"Starting Source Cooperative MCP Server v{pkg_version}")
+    except PackageNotFoundError:
+        logger.info("Starting Source Cooperative MCP Server")
+    
     logger.info("Initializing Source Cooperative MCP Server")
     http_client = httpx.AsyncClient(timeout=30.0)
     logger.info("HTTP client initialized")
@@ -755,7 +762,11 @@ async def get_featured_products() -> List[Dict]:
 
 def main():
     """Entry point for the MCP server."""
-    logger.info("Starting Source Cooperative MCP Server with obstore")
+    try:
+        pkg_version = version("source-coop-mcp")
+        logger.info(f"Starting Source Cooperative MCP Server v{pkg_version}")
+    except PackageNotFoundError:
+        logger.info("Starting Source Cooperative MCP Server")
     mcp.run()
 
 

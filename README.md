@@ -28,14 +28,13 @@ graph TB
         MCP[Source Cooperative MCP<br/>FastMCP + obstore]
     end
 
-    subgraph "7 Available Tools"
+    subgraph "6 Available Tools"
         T1[list_accounts<br/>94+ orgs]
-        T2[list_products<br/>published]
-        T3[list_products_from_s3<br/>all datasets]
-        T4[get_product_details<br/>+ README]
-        T5[list_product_files<br/>tree mode]
-        T6[get_file_metadata<br/>no download]
-        T7[search_products<br/>fuzzy]
+        T2[list_products<br/>hybrid S3+API]
+        T3[get_product_details<br/>+ README]
+        T4[list_product_files<br/>tree mode]
+        T5[get_file_metadata<br/>no download]
+        T6[search<br/>hybrid fuzzy]
     end
 
     subgraph "Data Sources"
@@ -56,16 +55,15 @@ graph TB
     MCP --> T4
     MCP --> T5
     MCP --> T6
-    MCP --> T7
 
     T1 --> S2
     T2 --> S1
+    T2 --> S2
+    T3 --> S1
     T3 --> S2
-    T4 --> S1
     T4 --> S2
     T5 --> S2
-    T6 --> S2
-    T7 --> S1
+    T6 --> S1
 
     style MCP fill:#4CAF50,stroke:#2E7D32,stroke-width:3px,color:#fff
     style S1 fill:#2196F3,stroke:#1976D2,stroke-width:2px,color:#fff
@@ -153,13 +151,13 @@ Add to Continue config (`~/.continue/config.json`):
 | Tool | Purpose | Performance |
 |------|---------|-------------|
 | `list_accounts()` | Find all 94+ organizations | ~850ms |
-| `list_products()` | List published datasets (HTTP API) | ~240ms |
-| `list_products_from_s3()` | List ALL datasets (incl. unpublished) | ~240ms |
+| `list_products()` | **Hybrid:** S3 mode (default) for ALL datasets + file counts | ~240ms |
+| `list_products(include_unpublished=False)` | API mode for published datasets with rich metadata | ~500ms |
 | `get_product_details()` | Get metadata + README automatically | ~650ms |
 | `list_product_files()` | List files with S3/HTTP paths | ~240ms |
 | `list_product_files(show_tree=True)` | Tree view (72% token savings) | ~980ms |
 | `get_file_metadata()` | Get file info without downloading | ~230ms |
-| `search_products()` | Smart search with fuzzy matching | ~620ms |
+| `search(query)` | **Hybrid:** Search accounts + products (published + unpublished), top 5 results | ~5-10s |
 
 ---
 
@@ -264,12 +262,13 @@ This MCP server provides:
 All operations complete in **under 1 second**:
 
 ```
-list_accounts():              ~850ms  (94+ organizations)
-list_products_from_s3():      ~240ms  (S3 direct)
-list_product_files():         ~240ms  (simple list)
-list_product_files(tree=True): ~980ms  (72% token savings)
-get_file_metadata():          ~230ms  (HEAD only)
-search_products():            ~620ms  (fuzzy matching)
+list_accounts():                          ~850ms  (94+ organizations)
+list_products():                          ~240ms  (S3 mode - ALL datasets + file counts)
+list_products(include_unpublished=False): ~500ms  (API mode - published with metadata)
+list_product_files():                     ~240ms  (simple list)
+list_product_files(tree=True):            ~980ms  (72% token savings)
+get_file_metadata():                      ~230ms  (HEAD only)
+search(query):                            ~5-10s  (hybrid search - 1 recursive S3 scan, top 5 enriched)
 ```
 
 ### Token Optimization Impact

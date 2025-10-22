@@ -85,31 +85,161 @@ uv run python -u tests/test_all_mcp_tools.py
 
 ### Local Testing
 
-**With MCP Inspector** (recommended):
+#### Option 1: Claude Desktop (Recommended for End-to-End Testing)
 
+**Step 1: Backup your Claude config**
 ```bash
-npx @modelcontextprotocol/inspector uv run src/source_coop_mcp/server.py
+cp ~/Library/Application\ Support/Claude/claude_desktop_config.json \
+   ~/Library/Application\ Support/Claude/claude_desktop_config.json.backup
 ```
 
-Opens web interface to test all tools interactively.
+**Step 2: Edit Claude Desktop config**
+```bash
+# Open config in default editor
+open ~/Library/Application\ Support/Claude/claude_desktop_config.json
+```
 
-**With Claude Desktop** (local development):
+**Step 3: Add local development server**
 
+Choose ONE of these methods:
+
+**Method A: Using `uvx` with local path** (fastest)
 ```json
 {
   "mcpServers": {
-    "source-coop-dev": {
-      "command": "uv",
+    "source-coop-mcp-dev": {
+      "command": "uvx",
       "args": [
-        "--directory",
-        "/absolute/path/to/source-coop-mcp",
-        "run",
-        "src/source_coop_mcp/server.py"
+        "--from",
+        "/Users/yharby/Documents/gh/walkthru-lat/source-soop-mcp",
+        "source-coop-mcp"
       ]
     }
   }
 }
 ```
+
+**Method B: Using `uv run` directly** (more control)
+```json
+{
+  "mcpServers": {
+    "source-coop-mcp-dev": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Users/yharby/Documents/gh/walkthru-lat/source-soop-mcp",
+        "python",
+        "-m",
+        "source_coop_mcp.server"
+      ]
+    }
+  }
+}
+```
+
+**Step 4: Restart Claude Desktop**
+- Completely quit Claude Desktop (Cmd+Q)
+- Reopen Claude Desktop
+- Your local development server is now active
+
+**Step 5: Test your changes**
+
+Try these in Claude Desktop:
+
+1. **Test search with fuzzy matching:**
+   ```
+   Search for products matching "exopase"
+   ```
+   Should find "exiobase-3" with 80% similarity
+
+2. **Test tree optimization:**
+   ```
+   List files for fused/fsq-os-places with tree view
+   ```
+   Should show `[0-326].parquet (327 files, ...)` instead of listing each file
+
+3. **Test pattern detection:**
+   ```
+   Show me the file structure for fused/overture
+   ```
+   Should detect and summarize numbered parquet files
+
+**Troubleshooting:**
+
+**❌ Common Mistake: Extra Quotes in Path**
+
+```json
+// WRONG - Has quotes in the string value
+{
+  "args": ["--from", "\"/Users/yharby/Documents/gh/walkthru-lat/source-soop-mcp\"", "source-coop-mcp"]
+}
+
+// CORRECT - No quotes inside string values
+{
+  "args": ["--from", "/Users/yharby/Documents/gh/walkthru-lat/source-soop-mcp", "source-coop-mcp"]
+}
+```
+
+**Error**: `Distribution not found at: file://.../%22/Users/...%22`
+- The `%22` indicates URL-encoded quotes in the path
+- Remove quotes from inside the JSON string values
+
+**Verification Commands:**
+```bash
+# Check if uvx can find your local package
+uvx --from /Users/yharby/Documents/gh/walkthru-lat/source-soop-mcp source-coop-mcp --help
+
+# View Claude Desktop logs
+tail -f ~/Library/Logs/Claude/mcp*.log
+
+# View Goose logs (if using Goose)
+cat ~/.config/goose/sessions/*/logs/*
+
+# Test server manually
+cd /Users/yharby/Documents/gh/walkthru-lat/source-soop-mcp
+uv run source-coop-mcp  # Should output JSON messages
+```
+
+#### Option 2: MCP Inspector (Best for Tool Testing)
+
+```bash
+# Install MCP Inspector globally (one-time)
+npm install -g @modelcontextprotocol/inspector
+
+# Run with your local server
+mcp-inspector uvx --from /Users/yharby/Documents/gh/walkthru-lat/source-soop-mcp source-coop-mcp
+```
+
+Opens a web interface at `http://localhost:5173` where you can:
+- See all available tools
+- Call tools with custom parameters
+- View JSON-RPC requests/responses in real-time
+- Debug errors interactively
+
+#### Option 3: Manual Server Testing
+
+```bash
+cd /Users/yharby/Documents/gh/walkthru-lat/source-soop-mcp
+
+# Start server in stdio mode (MCP protocol)
+uv run python -m source_coop_mcp.server
+
+# Server will wait for MCP protocol messages on stdin
+# Press Ctrl+C to stop
+```
+
+#### Quick Testing Checklist
+
+After configuring Claude Desktop with your local server:
+
+- [ ] Claude Desktop completely quit and reopened
+- [ ] Server shows in Claude's available tools
+- [ ] Search "exopase" finds "exiobase-3" (fuzzy match ✓)
+- [ ] Tree view detects numbered file patterns
+- [ ] No errors in `~/Library/Logs/Claude/mcp*.log`
+- [ ] All changes reflected in behavior
+- [ ] Ready to commit!
 
 ---
 
@@ -119,10 +249,12 @@ Opens web interface to test all tools interactively.
 
 **Single unified test file**: `tests/test_all_mcp_tools.py`
 
-Tests all 7 tools with:
+Tests all 8 MCP tools with:
 - Performance timing
 - Success/failure tracking
 - Detailed reporting
+- Token optimization verification
+- Pattern detection testing
 
 **Run tests**:
 
@@ -133,11 +265,11 @@ uv run python -u tests/test_all_mcp_tools.py
 **Expected output**:
 
 ```
-Total Tests: 9
-✓ Passed: 9
+Total Tests: 11
+✓ Passed: 11
 ✗ Failed: 0
 Success Rate: 100.0%
-Total Duration: 6.58s
+Total Duration: ~8-9s
 ```
 
 ### Test Coverage
@@ -149,9 +281,12 @@ Total Duration: 6.58s
 | `list_products_from_s3` | All products | Includes unpublished |
 | `get_product_details` | With README | Auto-included |
 | `list_product_files` | File listing | S3 + HTTP URLs |
+| `list_product_files` | Tree mode | 72.3% token reduction |
 | `get_file_metadata` | HEAD request | No download |
 | `search_products` | Exact match | Relevance scoring |
-| `search_products` | Fuzzy match | Typo handling |
+| `search_products` | Fuzzy match | Typo handling (60% threshold) |
+| `list_product_files` | Numbered files | Pattern detection (Foursquare) |
+| `list_product_files` | Date directories | Temporal snapshot detection |
 
 ---
 
@@ -253,12 +388,31 @@ uv run ruff check --fix .
 - **For 1000 files**: Saves ~108,500 tokens per request
 - **Why**: Tree contains all info (paths, sizes, structure) - no duplication needed
 
-**Smart Partition Detection**:
-- Automatically detects Hive-style partitioning patterns (e.g., `year=2020`, `format=ixi`)
-- Summarizes partitions instead of listing all values
-- Example: `year={2020,2021,2022,...+5 more}/` instead of 8 separate directories
-- Provides schema overview while showing actual structure
-- Additional token savings for heavily partitioned datasets (10-50% more savings)
+**Smart Pattern Detection** (3 types):
+
+1. **Hive-style Partitions**:
+   - Detects patterns like `year=2020/`, `format=ixi/`
+   - Shows: `year={1995,1996,...,2007 (13 total)}/`
+   - Instead of listing all partition values
+   - Saves 10-50% tokens for partitioned datasets
+
+2. **Numbered Files**:
+   - Detects sequential files: `0.parquet`, `1.parquet`, ..., `80.parquet`
+   - Shows: `[0-80].parquet (81 files, 6.0 MB - 465.3 MB, total: 12.7 GB)`
+   - Includes size range (min, max, total)
+   - Saves 28.7%-70% tokens for numbered datasets
+   - Example: Foursquare dataset (335 files) → ~2,400 tokens saved
+
+3. **Date Directories**:
+   - Detects temporal patterns: `2024-11-19/`, `2024-12-03/`
+   - Shows: `{2024-11-19, 2024-12-03, ..., 2025-02-06} (4 temporal snapshots)`
+   - Displays structure from first date as example
+   - Saves significant tokens for time-series datasets
+
+**Combined Impact**:
+- Base tree optimization: 72.3% reduction
+- Pattern detection: +28.7% to +70% additional savings
+- **Total possible savings: >98%** for large partitioned datasets
 
 ### Performance Tips
 

@@ -11,6 +11,7 @@ from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 import logging
+import asyncio
 from importlib.metadata import version, PackageNotFoundError
 from difflib import SequenceMatcher
 
@@ -107,29 +108,95 @@ async def list_accounts() -> List[str]:
         raise
 
 
-@mcp.tool()
-async def list_products(
-    account_id: Optional[str] = None, featured_only: bool = False
+async def _internal_list_accounts() -> List[str]:
+    """
+    Internal helper to list accounts (used by other functions).
+    Uses S3 direct listing for reliability (API can return invalid JSON).
+    """
+    try:
+        logger.info("Listing accounts from S3 (more reliable than API)")
+
+        # Use S3 direct listing (same as list_accounts() tool)
+        result = await obs.list_with_delimiter_async(default_store, prefix="")
+        common_prefixes = result.get("common_prefixes", [])
+
+        accounts = sorted([prefix.rstrip("/") for prefix in common_prefixes])
+        logger.info(f"Discovered {len(accounts)} accounts from S3")
+        return accounts
+    except Exception as e:
+        logger.error(f"Error listing accounts from S3: {e}")
+        raise
+
+
+async def _internal_list_products(
+    account_id: Optional[str] = None,
+    featured_only: bool = False,
+    include_unpublished: bool = True,
+    include_file_count: bool = True,
 ) -> List[Dict]:
     """
-    List products (datasets) in Source Cooperative.
-
-    Args:
-        account_id: Filter by specific account. If None, lists from all accounts.
-        featured_only: Only return featured/curated products.
-
-    Returns:
-        List of products with metadata (title, description, dates, featured status)
-
-    Examples:
-        >>> await list_products(account_id="clarkcga")
-        [{"product_id": "hls-multi-temporal-cloud-gap-imputation", ...}]
-
-        >>> await list_products(featured_only=True)
-        [{"product_id": "gov-data", "featured": 1, ...}]
+    Internal helper to list products (used by other functions).
+    Hybrid approach: uses S3 by default (includes unpublished), API when include_unpublished=False.
     """
+    # Use S3 direct listing by default (faster, includes unpublished)
+    if include_unpublished:
+        if not account_id:
+            raise ValueError(
+                "account_id is required when include_unpublished=True. "
+                "Scanning all accounts in S3 would be too slow."
+            )
+
+        try:
+            logger.info(f"Listing ALL products (including unpublished) for {account_id} from S3")
+
+            # List all directories under account_id/ using delimiter
+            result = await obs.list_with_delimiter_async(default_store, prefix=f"{account_id}/")
+
+            # Extract common prefixes (these are product directories)
+            common_prefixes = result.get("common_prefixes", [])
+
+            products = []
+            for prefix in common_prefixes:
+                # prefix looks like: 'youssef-harby/product-name/'
+                product_id = prefix.rstrip("/").split("/")[-1]
+
+                product_info = {
+                    "product_id": product_id,
+                    "account_id": account_id,
+                    "source": "s3",
+                    "s3_prefix": f"s3://{DEFAULT_BUCKET}/{prefix}",
+                }
+
+                # Optionally count files
+                if include_file_count:
+                    try:
+                        file_result = await obs.list_with_delimiter_async(
+                            default_store, prefix=prefix
+                        )
+                        file_count = len(
+                            [
+                                obj
+                                for obj in file_result.get("objects", [])
+                                if not obj.get("path", "").endswith("/")
+                            ]
+                        )
+                        product_info["file_count"] = file_count
+                    except Exception as e:
+                        logger.warning(f"Could not count files for {product_id}: {e}")
+                        product_info["file_count"] = None
+
+                products.append(product_info)
+
+            logger.info(f"Found {len(products)} products in S3 for {account_id}")
+            return sorted(products, key=lambda x: x["product_id"])
+
+        except Exception as e:
+            logger.error(f"Error listing products from S3: {e}")
+            raise
+
+    # Default: Use API (published products only)
     if http_client is None:
-        raise RuntimeError("HTTP client not initialized. Server may not have started properly.")
+        raise RuntimeError("HTTP client not initialized.")
 
     try:
         if account_id:
@@ -138,14 +205,24 @@ async def list_products(
             resp = await http_client.get(f"{API_BASE}/products/{account_id}")
 
             if resp.status_code == 200:
-                data = resp.json()
-                products = data.get("products", [])
+                try:
+                    data = resp.json()
+                    products = data.get("products", [])
 
-                if featured_only:
-                    products = [p for p in products if p.get("featured") == 1]
+                    if featured_only:
+                        products = [p for p in products if p.get("featured") == 1]
 
-                logger.info(f"Found {len(products)} products for {account_id}")
-                return products
+                    logger.info(f"Found {len(products)} products for {account_id}")
+                    return products
+                except ValueError:
+                    logger.error(
+                        f"Invalid JSON response for account {account_id}: "
+                        f"{resp.text[:200] if resp.text else '(empty response)'}"
+                    )
+                    raise ValueError(
+                        f"API returned invalid JSON for account {account_id}. "
+                        f"Response: {resp.text[:200] if resp.text else '(empty)'}"
+                    )
             else:
                 logger.warning(f"HTTP {resp.status_code} for account {account_id}")
                 return []
@@ -153,19 +230,29 @@ async def list_products(
         else:
             # Discover all products across all accounts
             logger.info("Discovering products from all accounts")
-            accounts = await list_accounts()
+            accounts = await _internal_list_accounts()
             all_products = []
 
             for acc in accounts:
                 try:
                     resp = await http_client.get(f"{API_BASE}/products/{acc}")
                     if resp.status_code == 200:
-                        products = resp.json().get("products", [])
+                        try:
+                            products = resp.json().get("products", [])
 
-                        if featured_only:
-                            products = [p for p in products if p.get("featured") == 1]
+                            if featured_only:
+                                products = [p for p in products if p.get("featured") == 1]
 
-                        all_products.extend(products)
+                            all_products.extend(products)
+                        except ValueError:
+                            # JSON decode error - API returned non-JSON content
+                            logger.warning(
+                                f"Skipping account {acc}: Invalid JSON response "
+                                f"(status {resp.status_code}, content: {resp.text[:100]}...)"
+                            )
+                            continue
+                    else:
+                        logger.debug(f"Skipping account {acc}: HTTP {resp.status_code}")
                 except Exception as e:
                     logger.warning(f"Skipping account {acc}: {e}")
                     continue
@@ -179,76 +266,61 @@ async def list_products(
 
 
 @mcp.tool()
-async def list_products_from_s3(account_id: str, include_file_count: bool = False) -> List[Dict]:
+async def list_products(
+    account_id: Optional[str] = None,
+    featured_only: bool = False,
+    include_unpublished: bool = True,
+    include_file_count: bool = True,
+) -> List[Dict]:
     """
-    List ALL products for an account by scanning S3 directly with obstore.
-    This discovers both published AND unpublished products.
+    List products (datasets) in Source Cooperative with hybrid S3 + API approach.
 
-    Unlike list_products() which uses the HTTP API (only published products),
-    this tool scans the S3 bucket directly to find all product directories.
+    DEFAULT: Uses S3 direct scan (fast, includes ALL products with file counts).
+    Set include_unpublished=False for published-only with rich metadata from API.
 
     Args:
-        account_id: Account ID (e.g., "youssef-harby")
-        include_file_count: If True, count files in each product (slower)
+        account_id: Filter by specific account. REQUIRED for S3 mode (default).
+                   If None with include_unpublished=False, lists published from all accounts.
+        featured_only: Only return featured/curated products (API mode only).
+        include_unpublished: If True (default), scan S3 for ALL products including unpublished.
+                           If False, use API for published products with rich metadata.
+        include_file_count: Count files in each product (default True, only in S3 mode).
 
     Returns:
-        List of product dicts with product_id and optional file_count
+        S3 mode (default): Basic info (product_id, s3_prefix, file_count) - fast!
+        API mode: Rich metadata (product_id, title, description, dates) - slower
 
-    Example:
-        >>> await list_products_from_s3("youssef-harby")
+    Performance:
+        - S3 mode (default): ~240ms, includes unpublished products + file counts
+        - API mode (include_unpublished=False): ~500ms, rich metadata, published only
+
+    Examples:
+        >>> # ALL products with file counts (DEFAULT - fast!)
+        >>> await list_products(account_id="youssef-harby")
         [
-            {"product_id": "exiobase-3", "source": "s3"},
-            {"product_id": "egms-copernicus", "source": "s3"},
+            {"product_id": "exiobase-3", "source": "s3", "file_count": 1000, ...},
+            {"product_id": "egms-copernicus", "source": "s3", "file_count": 53, ...},
             ...
         ]
+
+        >>> # Published products with rich metadata (API mode)
+        >>> await list_products(account_id="youssef-harby", include_unpublished=False)
+        [{"product_id": "egms-copernicus", "title": "...", "description": "...", ...}]
+
+        >>> # Fast mode without file counts
+        >>> await list_products(account_id="youssef-harby", include_file_count=False)
+        [{"product_id": "exiobase-3", "source": "s3", ...}]
+
+        >>> # Featured products only (requires API mode)
+        >>> await list_products(featured_only=True, include_unpublished=False)
+        [{"product_id": "gov-data", "featured": 1, ...}]
     """
-    try:
-        logger.info(f"Listing products for {account_id} from S3 using obstore")
-
-        # List all directories under account_id/ using delimiter
-        # Use async version for better performance
-        result = await obs.list_with_delimiter_async(default_store, prefix=f"{account_id}/")
-
-        # Extract common prefixes (these are product directories)
-        common_prefixes = result.get("common_prefixes", [])
-
-        products = []
-        for prefix in common_prefixes:
-            # prefix looks like: 'youssef-harby/product-name/'
-            product_id = prefix.rstrip("/").split("/")[-1]
-
-            product_info = {
-                "product_id": product_id,
-                "account_id": account_id,
-                "source": "s3",
-                "s3_prefix": f"s3://{DEFAULT_BUCKET}/{prefix}",
-            }
-
-            # Optionally count files
-            if include_file_count:
-                try:
-                    # Use async version for better performance
-                    file_result = await obs.list_with_delimiter_async(default_store, prefix=prefix)
-                    file_count = len(
-                        [
-                            obj
-                            for obj in file_result.get("objects", [])
-                            if not obj.get("path", "").endswith("/")
-                        ]
-                    )
-                    product_info["file_count"] = file_count
-                except Exception as e:
-                    logger.warning(f"Could not count files for {product_id}: {e}")
-                    product_info["file_count"] = None
-
-            products.append(product_info)
-
-        logger.info(f"Found {len(products)} products in S3 for {account_id}")
-        return sorted(products, key=lambda x: x["product_id"])
-
-    except Exception as e:
-        logger.error(f"Error listing products from S3: {e}")
-        raise
+    return await _internal_list_products(
+        account_id=account_id,
+        featured_only=featured_only,
+        include_unpublished=include_unpublished,
+        include_file_count=include_file_count,
+    )
 
 
 @mcp.tool()
@@ -523,14 +595,156 @@ async def list_product_files(
 
                 return False, None
 
+            def detect_numbered_files(items_dict):
+                """
+                Detect numbered file patterns like 0.parquet, 1.parquet, ..., 80.parquet
+                Returns (is_numbered, pattern_summary, size_range) or (False, None, None)
+                """
+                if not items_dict or len(items_dict) < 3:
+                    return False, None, None
+
+                # Check if items are files (have 'size' key) and follow numbered pattern
+                files_info = []
+                for name, value in items_dict.items():
+                    if isinstance(value, dict) and "size" in value:
+                        # Try to extract number from filename
+                        base_name = name.rsplit(".", 1)[0] if "." in name else name
+                        if base_name.isdigit():
+                            files_info.append((int(base_name), name, value["size"]))
+
+                # If we found numbered files and they represent >70% of items
+                if files_info and len(files_info) / len(items_dict) > 0.7:
+                    files_info.sort(key=lambda x: x[0])
+                    numbers = [f[0] for f in files_info]
+
+                    # Check if numbers are sequential or close to sequential
+                    min_num = numbers[0]
+                    max_num = numbers[-1]
+                    expected_count = max_num - min_num + 1
+
+                    # If we have most of the expected sequence
+                    if len(numbers) / expected_count > 0.8:
+                        # Get file extension from first file
+                        extension = (
+                            files_info[0][1].split(".")[-1] if "." in files_info[0][1] else ""
+                        )
+
+                        # Calculate size range
+                        sizes = [f[2] for f in files_info]
+                        min_size = min(sizes)
+                        max_size = max(sizes)
+                        total_size = sum(sizes)
+
+                        pattern = (
+                            f"[{min_num}-{max_num}].{extension}"
+                            if extension
+                            else f"[{min_num}-{max_num}]"
+                        )
+                        size_range = {
+                            "min": min_size,
+                            "max": max_size,
+                            "total": total_size,
+                            "count": len(files_info),
+                        }
+                        return True, pattern, size_range
+
+                return False, None, None
+
+            def detect_date_directories(items_dict):
+                """
+                Detect date directory patterns like 2024-11-19/, 2024-12-03/, 2025-01-10/
+                Returns (is_date_pattern, dates_summary) or (False, None)
+                """
+                if not items_dict or len(items_dict) < 2:
+                    return False, None
+
+                import re
+
+                date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+                date_dirs = []
+                for name, value in items_dict.items():
+                    if isinstance(value, dict) and "size" not in value:  # It's a directory
+                        if date_pattern.match(name):
+                            date_dirs.append(name)
+
+                # If we found date directories and they represent >70% of directories
+                if date_dirs and len(date_dirs) / len(items_dict) > 0.7:
+                    date_dirs.sort()
+                    if len(date_dirs) <= 5:
+                        dates_str = ", ".join(date_dirs)
+                    else:
+                        dates_str = f"{date_dirs[0]}, {date_dirs[1]}, ..., {date_dirs[-1]}"
+
+                    summary = f"{{{dates_str}}} ({len(date_dirs)} temporal snapshots)"
+                    return True, summary
+
+                return False, None
+
             def build_tree_lines(node, prefix="", current_path=""):
-                """Recursively build tree visualization with partition detection"""
+                """Recursively build tree visualization with partition, numbered file, and date detection"""
                 lines = []
                 items = sorted(node.items())
 
-                # Detect if this level has partition patterns
-                is_partitioned, pattern_summary = detect_partition_pattern(node)
+                # 1. Check for numbered file patterns (highest priority for files)
+                is_numbered, num_pattern, size_range = detect_numbered_files(node)
+                if is_numbered and num_pattern and size_range:
+                    # Show summarized numbered file pattern
+                    min_size_str = format_size(size_range["min"])
+                    max_size_str = format_size(size_range["max"])
+                    total_size_str = format_size(size_range["total"])
+                    count = size_range["count"]
 
+                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{current_path}/"
+                    lines.append(
+                        f"{prefix}├── {num_pattern} ({count} files, {min_size_str} - {max_size_str}, "
+                        f"total: {total_size_str}) → {dir_s3_path}"
+                    )
+
+                    # Show any non-numbered files in the same directory
+                    for name, value in items:
+                        if isinstance(value, dict) and "size" in value:
+                            base_name = name.rsplit(".", 1)[0] if "." in name else name
+                            if not base_name.isdigit():
+                                size_str = format_size(value["size"])
+                                lines.append(f"{prefix}├── {name} ({size_str}) → {value['s3_uri']}")
+                        elif isinstance(value, dict) and "size" not in value:
+                            # Show subdirectories
+                            item_path = f"{current_path}/{name}" if current_path else name
+                            dir_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{item_path}/"
+                            lines.append(f"{prefix}├── {name}/ → {dir_path}")
+                            lines.extend(build_tree_lines(value, prefix + "│   ", item_path))
+
+                    return lines
+
+                # 2. Check for date directory patterns
+                is_date_pattern, dates_summary = detect_date_directories(node)
+                if is_date_pattern and dates_summary:
+                    # Show summarized date directories
+                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{current_path}/"
+                    lines.append(f"{prefix}├── {dates_summary} → {dir_s3_path}")
+
+                    # Get first date directory to show structure underneath
+                    date_dirs = sorted(
+                        [
+                            name
+                            for name, value in items
+                            if isinstance(value, dict) and "size" not in value
+                        ]
+                    )
+                    if date_dirs:
+                        first_date = date_dirs[0]
+                        first_value = node[first_date]
+                        item_path = f"{current_path}/{first_date}" if current_path else first_date
+
+                        # Show structure of first date directory
+                        lines.append(f"{prefix}│   Example structure from {first_date}/:")
+                        lines.extend(build_tree_lines(first_value, prefix + "│   ", item_path))
+
+                    return lines
+
+                # 3. Check for Hive-style partition patterns
+                is_partitioned, pattern_summary = detect_partition_pattern(node)
                 if is_partitioned and pattern_summary:
                     # Show summarized partition pattern instead of all values
                     item_path = (
@@ -553,7 +767,7 @@ async def list_product_files(
                         )
                     return lines
 
-                # Normal tree building
+                # 4. Normal tree building (no patterns detected)
                 for i, (name, value) in enumerate(items):
                     is_last = i == len(items) - 1
                     connector = "└── " if is_last else "├── "
@@ -718,53 +932,74 @@ async def get_file_metadata(path: str) -> Dict:
 
 
 @mcp.tool()
-async def search_products(
-    query: str, account_id: Optional[str] = None, search_in: Optional[List[str]] = None
-) -> List[Dict]:
+async def search(query: str) -> List[Dict]:
     """
-    Search for products across Source Cooperative with smart fuzzy matching.
-    Handles typos, partial matches, and incomplete words using similarity scoring.
+    Search for products across ALL accounts with smart fuzzy matching.
+    Handles typos, partial matches, and incomplete words using 60% similarity threshold.
+
+    **Hybrid Search** - Automatically searches across:
+    - All 94+ organizations
+    - ALL products (published + unpublished)
+    - All fields: title, description, product_id
+
+    Published products: Full metadata (title, description, product_id)
+    Unpublished products: product_id only (no title/description available)
 
     Args:
-        query: Search term (supports typos and partial matches)
-        account_id: Optional account filter. RECOMMENDED for performance.
-                   Without account_id, searches all 92 accounts (30-60s).
-        search_in: Fields to search in (title, description, product_id).
-                   Defaults to all fields if not specified.
+        query: Search keyword (supports typos and partial matches)
 
     Returns:
-        Matching products with relevance scoring (sorted by score)
+        **Top 5** matching accounts or products (sorted by relevance score)
 
     Performance:
-        - With account_id: ~200-500ms
-        - Without account_id: ~30-60s (searches all 92 accounts)
+        ~5-8s (parallel 2-level S3 scan + top 5 API enrichment)
+
+        Performance breakdown:
+        - S3 parallel listing: ~2.4s (94 accounts + 354 products)
+        - Fuzzy matching: <1s (in-memory processing)
+        - API enrichment: ~2-5s (only top 5 results)
+
+        **11x faster** than sequential approach (was ~27s)
+        **Uses 2-level delimiter listing** (not full recursive scan)
 
     Examples:
         >>> # Exact match
-        >>> results = await search_products("climate", account_id="harvard-lil")
+        >>> results = await search("climate")
 
-        >>> # Fuzzy match (typo)
-        >>> results = await search_products("climte", account_id="harvard-lil")
+        >>> # Fuzzy match (handles typos)
+        >>> results = await search("climte")  # Finds "climate"
+        >>> results = await search("exiopase")  # Finds "exiobase-3" (includes unpublished!)
 
         >>> # Partial match
-        >>> results = await search_products("clim", account_id="harvard-lil")
+        >>> results = await search("geo")  # Finds "geospatial", "geocoding", etc.
 
-        >>> print(results[0])
+        >>> # Result formats
+        >>> print(results[0])  # Account match
         {
-            "product_id": "...",
-            "title": "Climate Data...",
-            "search_score": 5.8,
+            "type": "account",
+            "account_id": "harvard-lil",
+            "match_string": "harvard-lil",
+            "search_score": 9.5,
             "similarity": 0.95,
-            "matched_fields": ["title"]
+            "matched_fields": ["account_id"]
+        }
+
+        >>> print(results[1])  # Product match
+        {
+            "type": "product",
+            "account_id": "youssef-harby",
+            "product_id": "exiobase-3",
+            "match_string": "youssef-harby/exiobase-3",
+            "title": "",  # Empty for unpublished products
+            "description": "",  # Empty for unpublished products
+            "search_score": 8.2,
+            "similarity": 0.82,
+            "matched_fields": ["product_id"]
         }
     """
     try:
-        # Set default search fields if not provided
-        if search_in is None:
-            search_in = ["title", "description", "product_id"]
+        logger.info(f"Searching for: '{query}' across ALL accounts (published + unpublished)")
 
-        logger.info(f"Searching for: '{query}' in {search_in}")
-        products = await list_products(account_id=account_id)
         query_lower = query.lower()
 
         # Fuzzy matching threshold (0-1, higher = more strict)
@@ -804,8 +1039,77 @@ async def search_products(
 
             return False, best_similarity
 
-        results = []
-        for product in products:
+        # OPTIMIZED: Parallel 2-level delimiter listing (fast, only scans directory structure)
+        # Level 1: Get all accounts
+        # Level 2: Get products for each account IN PARALLEL
+        logger.info("Discovering all accounts and products via parallel 2-level S3 listing...")
+
+        # Get all accounts (Level 1)
+        accounts = await _internal_list_accounts()
+        logger.info(f"Found {len(accounts)} accounts")
+
+        # Get products for ALL accounts in parallel (Level 2)
+        products_by_id = {}  # Key: "account/product", Value: {account_id, product_id}
+
+        # Parallel execution using asyncio.gather
+        async def get_account_products(account: str):
+            """Get products for a single account"""
+            try:
+                result = await obs.list_with_delimiter_async(default_store, prefix=f"{account}/")
+                prefixes = result.get("common_prefixes", [])
+
+                account_products = []
+                for prefix in prefixes:
+                    product_id = prefix.rstrip("/").split("/")[-1]
+                    account_products.append(
+                        {
+                            "account_id": account,
+                            "product_id": product_id,
+                            "title": "",  # No title from S3 (unpublished)
+                            "description": "",  # No description from S3
+                            "source": "s3_discovered",
+                        }
+                    )
+                return account_products
+            except Exception as e:
+                logger.warning(f"Failed to list products for {account}: {e}")
+                return []
+
+        # Execute all account listings in parallel
+        logger.info(f"Listing products for {len(accounts)} accounts in parallel...")
+        results = await asyncio.gather(*[get_account_products(acc) for acc in accounts])
+
+        # Flatten results and deduplicate
+        for account_products in results:
+            for product in account_products:
+                key = f"{product['account_id']}/{product['product_id']}"
+                products_by_id[key] = product
+
+        all_products = list(products_by_id.values())
+        logger.info(f"Discovered {len(all_products)} products from {len(accounts)} accounts")
+
+        # Search account names themselves
+        all_results = []  # Will contain both account matches and product matches
+
+        for account in accounts:
+            found, similarity = fuzzy_search_in_text(query_lower, account)
+            if found:
+                all_results.append(
+                    {
+                        "type": "account",
+                        "account_id": account,
+                        "match_string": account,
+                        "search_score": 10 * similarity,  # High score for account matches
+                        "similarity": similarity,
+                        "matched_fields": ["account_id"],
+                    }
+                )
+
+        search_in = ["title", "description", "product_id"]
+        logger.info(f"Fuzzy matching {query} against {len(all_products)} products...")
+
+        # Now search through products
+        for product in all_products:
             score = 0
             matches = []
             best_similarity = 0.0
@@ -844,8 +1148,10 @@ async def search_products(
                     best_similarity = max(best_similarity, similarity)
 
             if score > 0:
-                results.append(
+                all_results.append(
                     {
+                        "type": "product",
+                        "match_string": f"{product.get('account_id')}/{product.get('product_id')}",
                         **product,
                         "search_score": round(score, 2),
                         "similarity": round(best_similarity, 2),
@@ -854,10 +1160,38 @@ async def search_products(
                 )
 
         # Sort by relevance (score first, then similarity)
-        results.sort(key=lambda x: (x["search_score"], x["similarity"]), reverse=True)
-        logger.info(f"Found {len(results)} matching products")
+        all_results.sort(key=lambda x: (x["search_score"], x["similarity"]), reverse=True)
 
-        return results
+        # Get top 5 results
+        top_results = all_results[:5]
+        logger.info(f"Found {len(all_results)} total matches, selecting top {len(top_results)}")
+
+        # Enrich top 5 product results with API metadata (if published)
+        logger.info("Enriching top 5 results with API metadata...")
+        for result in top_results:
+            if result.get("type") == "product" and result.get("source") == "s3_discovered":
+                try:
+                    # Fetch full metadata from API directly
+                    account_id = result.get("account_id")
+                    product_id = result.get("product_id")
+
+                    resp = await http_client.get(f"{API_BASE}/products/{account_id}/{product_id}")
+                    if resp.status_code == 200:
+                        details = resp.json()
+                        # Update result with rich metadata
+                        result["title"] = details.get("title", "")
+                        result["description"] = details.get("description", "")
+                        result["source"] = "api_enriched"
+                    else:
+                        # Not published or not found
+                        result["source"] = "s3_unpublished"
+                except Exception as e:
+                    # Product is unpublished or API failed - keep S3 data
+                    logger.debug(f"Could not enrich {result.get('match_string')}: {e}")
+                    result["source"] = "s3_unpublished"
+
+        logger.info(f"Returning top {len(top_results)} results")
+        return top_results
 
     except Exception as e:
         logger.error(f"Error searching products: {e}")

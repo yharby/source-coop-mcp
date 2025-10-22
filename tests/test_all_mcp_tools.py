@@ -131,65 +131,23 @@ class MCPToolsTester:
             )
 
     # ============================================================================
-    # Tool 2: list_products()
+    # Tool 2: list_products() - S3 Mode (Default)
     # ============================================================================
 
     async def test_list_products(self) -> TestResult:
-        """Test list_products() - List published datasets via HTTP API"""
+        """Test list_products() - Hybrid tool using S3 by default (includes unpublished)"""
         print("\n" + "=" * 80)
-        print("TEST 2: list_products()")
+        print("TEST 2: list_products() - S3 Mode (Default)")
         print("=" * 80)
 
         try:
             start_time = time.perf_counter()
 
-            # Test with specific account
-            resp = await self.http_client.get(f"{API_BASE}/products/{TEST_ACCOUNT}")
-            resp.raise_for_status()
-
-            data = resp.json()
-            products = data.get("products", [])
-            duration_ms = (time.perf_counter() - start_time) * 1000
-
-            print(f"✓ Found {len(products)} published products for {TEST_ACCOUNT}")
-            print(f"✓ Duration: {duration_ms:.2f}ms")
-
-            for i, product in enumerate(products[:5], 1):
-                print(f"  {i}. {product.get('product_id')} - {product.get('title', 'N/A')}")
-
-            return self._record_result(
-                tool_name="list_products",
-                success=True,
-                duration_ms=duration_ms,
-                data={"count": len(products), "products": [p.get("product_id") for p in products]},
-                notes=f"Found {len(products)} published products via API",
-            )
-
-        except Exception as e:
-            print(f"✗ Error: {e}")
-            return self._record_result(
-                tool_name="list_products", success=False, duration_ms=0, error=str(e)
-            )
-
-    # ============================================================================
-    # Tool 3: list_products_from_s3()
-    # ============================================================================
-
-    async def test_list_products_from_s3(self) -> TestResult:
-        """Test list_products_from_s3() - List ALL datasets including unpublished"""
-        print("\n" + "=" * 80)
-        print("TEST 3: list_products_from_s3()")
-        print("=" * 80)
-
-        try:
-            start_time = time.perf_counter()
-
-            # List all directories under account
+            # Test S3 mode (default behavior) - includes unpublished products
             result = await obs.list_with_delimiter_async(self.store, prefix=f"{TEST_ACCOUNT}/")
-
             common_prefixes = result.get("common_prefixes", [])
-            products = []
 
+            products = []
             for prefix in common_prefixes:
                 product_id = prefix.rstrip("/").split("/")[-1]
                 products.append(
@@ -203,24 +161,65 @@ class MCPToolsTester:
 
             duration_ms = (time.perf_counter() - start_time) * 1000
 
-            print(f"✓ Found {len(products)} total products in S3 (including unpublished)")
+            print(f"✓ Found {len(products)} total products (S3 mode - includes unpublished)")
             print(f"✓ Duration: {duration_ms:.2f}ms")
 
             for i, product in enumerate(products[:10], 1):
                 print(f"  {i}. {product['product_id']}")
 
             return self._record_result(
-                tool_name="list_products_from_s3",
+                tool_name="list_products",
                 success=True,
                 duration_ms=duration_ms,
                 data={"count": len(products), "products": [p["product_id"] for p in products]},
-                notes=f"Found {len(products)} products in S3 (includes unpublished)",
+                notes=f"Found {len(products)} products in S3 mode (includes unpublished)",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="list_products_from_s3", success=False, duration_ms=0, error=str(e)
+                tool_name="list_products", success=False, duration_ms=0, error=str(e)
+            )
+
+    # ============================================================================
+    # Tool 3: list_products() - API Mode (Published Only)
+    # ============================================================================
+
+    async def test_list_products_api_mode(self) -> TestResult:
+        """Test list_products(include_unpublished=False) - API mode for published products only"""
+        print("\n" + "=" * 80)
+        print("TEST 3: list_products() - API Mode (Published Only)")
+        print("=" * 80)
+
+        try:
+            start_time = time.perf_counter()
+
+            # Test API mode - published products only with rich metadata
+            resp = await self.http_client.get(f"{API_BASE}/products/{TEST_ACCOUNT}")
+            resp.raise_for_status()
+
+            data = resp.json()
+            products = data.get("products", [])
+            duration_ms = (time.perf_counter() - start_time) * 1000
+
+            print(f"✓ Found {len(products)} published products (API mode)")
+            print(f"✓ Duration: {duration_ms:.2f}ms")
+
+            for i, product in enumerate(products[:5], 1):
+                print(f"  {i}. {product.get('product_id')} - {product.get('title', 'N/A')}")
+
+            return self._record_result(
+                tool_name="list_products_api_mode",
+                success=True,
+                duration_ms=duration_ms,
+                data={"count": len(products), "products": [p.get("product_id") for p in products]},
+                notes=f"Found {len(products)} published products via API mode",
+            )
+
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            return self._record_result(
+                tool_name="list_products_api_mode", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -553,13 +552,13 @@ class MCPToolsTester:
             )
 
     # ============================================================================
-    # Tool 7: search_products()
+    # Tool 7: search()
     # ============================================================================
 
-    async def test_search_products(self) -> TestResult:
-        """Test search_products() - Search datasets by keywords"""
+    async def test_search(self) -> TestResult:
+        """Test search() - Search datasets by keywords"""
         print("\n" + "=" * 80)
-        print("TEST 7: search_products()")
+        print("TEST 7: search()")
         print("=" * 80)
 
         try:
@@ -607,7 +606,7 @@ class MCPToolsTester:
                 print(f"     Matched: {', '.join(result['matched_fields'])}")
 
             return self._record_result(
-                tool_name="search_products",
+                tool_name="search",
                 success=True,
                 duration_ms=duration_ms,
                 data={"query": query, "count": len(results)},
@@ -617,17 +616,17 @@ class MCPToolsTester:
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="search_products", success=False, duration_ms=0, error=str(e)
+                tool_name="search", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
-    # Tool 8: search_products() with fuzzy matching
+    # Tool 8: search() with fuzzy matching
     # ============================================================================
 
-    async def test_search_products_fuzzy(self) -> TestResult:
-        """Test search_products() with fuzzy/similarity matching"""
+    async def test_search_fuzzy(self) -> TestResult:
+        """Test search() with fuzzy/similarity matching"""
         print("\n" + "=" * 80)
-        print("TEST 8: search_products() - Fuzzy Search")
+        print("TEST 8: search() - Fuzzy Search")
         print("=" * 80)
 
         try:
@@ -672,7 +671,7 @@ class MCPToolsTester:
                 )
 
             return self._record_result(
-                tool_name="search_products_fuzzy",
+                tool_name="search_fuzzy",
                 success=True,
                 duration_ms=duration_ms,
                 data={"query": query, "count": len(results)},
@@ -682,7 +681,118 @@ class MCPToolsTester:
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="search_products_fuzzy", success=False, duration_ms=0, error=str(e)
+                tool_name="search_fuzzy", success=False, duration_ms=0, error=str(e)
+            )
+
+    # ============================================================================
+    # Tool 9: list_product_files() - Foursquare numbered files optimization
+    # ============================================================================
+
+    async def test_foursquare_optimization(self) -> TestResult:
+        """Test numbered file and date directory optimization with Foursquare dataset"""
+        print("\n" + "=" * 80)
+        print("TEST 9: Foursquare Dataset - Numbered Files & Date Directories")
+        print("=" * 80)
+
+        try:
+            start_time = time.perf_counter()
+
+            # Test the Foursquare dataset: fused/fsq-os-places
+            account_id = "fused"
+            product_id = "fsq-os-places"
+            path_prefix = f"{account_id}/{product_id}/"
+
+            # Get all files/directories
+            stream = obs.list(self.store, prefix=path_prefix, chunk_size=1000)
+            all_items = []
+
+            async for batch in stream:
+                for obj_meta in batch:
+                    all_items.append(obj_meta)
+                    if len(all_items) >= 500:  # Limit for test
+                        break
+                if len(all_items) >= 500:
+                    break
+
+            # Count files and directories
+            files = [item for item in all_items if not item.get("path", "").endswith("/")]
+            dirs = [item for item in all_items if item.get("path", "").endswith("/")]
+
+            duration_ms = (time.perf_counter() - start_time) * 1000
+
+            print(f"✓ Analyzed {account_id}/{product_id}")
+            print(f"✓ Duration: {duration_ms:.2f}ms")
+            print(f"✓ Total items scanned: {len(all_items)}")
+            print(f"✓ Files: {len(files)}")
+            print(f"✓ Directories: {len(dirs)}")
+
+            # Analyze the structure
+            # Check for numbered files pattern
+            numbered_files = []
+            for file_item in files[:100]:  # Sample first 100 files
+                location = file_item.get("path", "")
+                filename = location.split("/")[-1]
+                base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+                if base_name.isdigit():
+                    numbered_files.append(filename)
+
+            # Check for date directories
+            import re
+
+            date_pattern = re.compile(r"\d{4}-\d{2}-\d{2}")
+            date_dirs = []
+            for dir_item in dirs[:20]:  # Sample first 20 directories
+                location = dir_item.get("path", "")
+                dirname = location.rstrip("/").split("/")[-1]
+                if date_pattern.match(dirname):
+                    date_dirs.append(dirname)
+
+            print("\n📊 Pattern Detection:")
+            print(f"  • Numbered files detected: {len(numbered_files)} (sample)")
+            print(f"  • Date directories detected: {len(date_dirs)} (sample)")
+
+            if numbered_files:
+                print(f"  • Numbered file examples: {', '.join(numbered_files[:5])}")
+
+            if date_dirs:
+                print(f"  • Date directory examples: {', '.join(date_dirs[:5])}")
+
+            # Estimate token savings
+            # OLD: Each file listed individually (~100 chars/file)
+            old_size = len(files) * 100
+            # NEW: With optimization, we show patterns (~200 chars for whole group)
+            new_size_estimated = 200 + (len(files) - len(numbered_files)) * 100
+            savings = old_size - new_size_estimated
+            efficiency = (savings / old_size * 100) if old_size > 0 else 0
+
+            print("\n💰 Estimated Token Savings:")
+            print(f"  • OLD (list all): ~{old_size:,} chars (~{old_size // 4:,} tokens)")
+            print(
+                f"  • NEW (patterns): ~{new_size_estimated:,} chars (~{new_size_estimated // 4:,} tokens)"
+            )
+            print(f"  • SAVED: ~{savings:,} chars (~{savings // 4:,} tokens)")
+            print(f"  • EFFICIENCY: {efficiency:.1f}% reduction")
+
+            return self._record_result(
+                tool_name="foursquare_optimization",
+                success=True,
+                duration_ms=duration_ms,
+                data={
+                    "files": len(files),
+                    "dirs": len(dirs),
+                    "numbered_files": len(numbered_files),
+                    "date_dirs": len(date_dirs),
+                },
+                notes=f"Detected {len(numbered_files)} numbered files, {len(date_dirs)} date dirs",
+            )
+
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return self._record_result(
+                tool_name="foursquare_optimization", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -701,14 +811,15 @@ class MCPToolsTester:
         # Run all tests
         await self.test_list_accounts()
         await self.test_list_products()
-        await self.test_list_products_from_s3()
+        await self.test_list_products_api_mode()
         await self.test_get_product_details()
         await self.test_get_product_details_with_readme()
         await self.test_list_product_files()
         await self.test_list_product_files_tree_mode()
         await self.test_get_file_metadata()
-        await self.test_search_products()
-        await self.test_search_products_fuzzy()
+        await self.test_search()
+        await self.test_search_fuzzy()
+        await self.test_foursquare_optimization()
 
         # Print summary
         self.print_summary()

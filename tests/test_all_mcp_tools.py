@@ -5,7 +5,7 @@ Tests all 8 MCP tools with performance metrics and detailed reporting
 
 import asyncio
 import time
-from typing import Dict, Any, Callable
+from typing import Any, Callable
 from dataclasses import dataclass
 import httpx
 import obstore as obs
@@ -31,6 +31,7 @@ TEST_PRODUCT_3 = "overture"  # Published with README
 @dataclass
 class TestResult:
     """Result of a test execution"""
+
     tool_name: str
     success: bool
     duration_ms: float
@@ -64,12 +65,19 @@ class MCPToolsTester:
             result = await func(*args, **kwargs)
             duration = (time.perf_counter() - start) * 1000  # Convert to ms
             return result, duration
-        except Exception as e:
+        except Exception:
             duration = (time.perf_counter() - start) * 1000
             raise
 
-    def _record_result(self, tool_name: str, success: bool, duration_ms: float,
-                      data: Any = None, error: str = "", notes: str = ""):
+    def _record_result(
+        self,
+        tool_name: str,
+        success: bool,
+        duration_ms: float,
+        data: Any = None,
+        error: str = "",
+        notes: str = "",
+    ):
         """Record test result"""
         result = TestResult(
             tool_name=tool_name,
@@ -77,7 +85,7 @@ class MCPToolsTester:
             duration_ms=duration_ms,
             error=error,
             data=data,
-            notes=notes
+            notes=notes,
         )
         self.results.append(result)
         return result
@@ -88,9 +96,9 @@ class MCPToolsTester:
 
     async def test_list_accounts(self) -> TestResult:
         """Test list_accounts() - Discover all organizations"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 1: list_accounts()")
-        print("="*80)
+        print("=" * 80)
 
         try:
             # Execute the tool logic  - Use list_with_delimiter for fast directory listing
@@ -113,16 +121,13 @@ class MCPToolsTester:
                 success=True,
                 duration_ms=duration_ms,
                 data={"count": len(accounts_list), "accounts": accounts_list[:20]},
-                notes=f"Discovered {len(accounts_list)} accounts"
+                notes=f"Discovered {len(accounts_list)} accounts",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="list_accounts",
-                success=False,
-                duration_ms=0,
-                error=str(e)
+                tool_name="list_accounts", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -131,9 +136,9 @@ class MCPToolsTester:
 
     async def test_list_products(self) -> TestResult:
         """Test list_products() - List published datasets via HTTP API"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 2: list_products()")
-        print("="*80)
+        print("=" * 80)
 
         try:
             start_time = time.perf_counter()
@@ -156,17 +161,14 @@ class MCPToolsTester:
                 tool_name="list_products",
                 success=True,
                 duration_ms=duration_ms,
-                data={"count": len(products), "products": [p.get('product_id') for p in products]},
-                notes=f"Found {len(products)} published products via API"
+                data={"count": len(products), "products": [p.get("product_id") for p in products]},
+                notes=f"Found {len(products)} published products via API",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="list_products",
-                success=False,
-                duration_ms=0,
-                error=str(e)
+                tool_name="list_products", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -175,30 +177,29 @@ class MCPToolsTester:
 
     async def test_list_products_from_s3(self) -> TestResult:
         """Test list_products_from_s3() - List ALL datasets including unpublished"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 3: list_products_from_s3()")
-        print("="*80)
+        print("=" * 80)
 
         try:
             start_time = time.perf_counter()
 
             # List all directories under account
-            result = await obs.list_with_delimiter_async(
-                self.store,
-                prefix=f"{TEST_ACCOUNT}/"
-            )
+            result = await obs.list_with_delimiter_async(self.store, prefix=f"{TEST_ACCOUNT}/")
 
             common_prefixes = result.get("common_prefixes", [])
             products = []
 
             for prefix in common_prefixes:
                 product_id = prefix.rstrip("/").split("/")[-1]
-                products.append({
-                    "product_id": product_id,
-                    "account_id": TEST_ACCOUNT,
-                    "source": "s3",
-                    "s3_prefix": f"s3://{BUCKET}/{prefix}"
-                })
+                products.append(
+                    {
+                        "product_id": product_id,
+                        "account_id": TEST_ACCOUNT,
+                        "source": "s3",
+                        "s3_prefix": f"s3://{BUCKET}/{prefix}",
+                    }
+                )
 
             duration_ms = (time.perf_counter() - start_time) * 1000
 
@@ -212,17 +213,14 @@ class MCPToolsTester:
                 tool_name="list_products_from_s3",
                 success=True,
                 duration_ms=duration_ms,
-                data={"count": len(products), "products": [p['product_id'] for p in products]},
-                notes=f"Found {len(products)} products in S3 (includes unpublished)"
+                data={"count": len(products), "products": [p["product_id"] for p in products]},
+                notes=f"Found {len(products)} products in S3 (includes unpublished)",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="list_products_from_s3",
-                success=False,
-                duration_ms=0,
-                error=str(e)
+                tool_name="list_products_from_s3", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -231,9 +229,9 @@ class MCPToolsTester:
 
     async def test_get_product_details(self) -> TestResult:
         """Test get_product_details() - Get comprehensive metadata"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 4: get_product_details()")
-        print("="*80)
+        print("=" * 80)
 
         try:
             start_time = time.perf_counter()
@@ -257,17 +255,14 @@ class MCPToolsTester:
                 tool_name="get_product_details",
                 success=True,
                 duration_ms=duration_ms,
-                data={"title": product_data.get('title'), "fields": list(product_data.keys())},
-                notes=f"Retrieved metadata for {TEST_ACCOUNT_2}/{TEST_PRODUCT_2}"
+                data={"title": product_data.get("title"), "fields": list(product_data.keys())},
+                notes=f"Retrieved metadata for {TEST_ACCOUNT_2}/{TEST_PRODUCT_2}",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="get_product_details",
-                success=False,
-                duration_ms=0,
-                error=str(e)
+                tool_name="get_product_details", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -276,9 +271,9 @@ class MCPToolsTester:
 
     async def test_get_product_details_with_readme(self) -> TestResult:
         """Test get_product_details() - should always include README automatically"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 4b: get_product_details() - README auto-included")
-        print("="*80)
+        print("=" * 80)
 
         try:
             start_time = time.perf_counter()
@@ -288,9 +283,9 @@ class MCPToolsTester:
                 f"{API_BASE}/products/{TEST_ACCOUNT_3}/{TEST_PRODUCT_3}"
             )
             resp.raise_for_status()
-            product_data = resp.json()
+            _ = resp.json()  # Product data not used in this test
 
-            # Also fetch README to verify it matches what the tool should return
+            # Fetch README to verify tool behavior
             path_prefix = f"{TEST_ACCOUNT_3}/{TEST_PRODUCT_3}/"
             result = await obs.list_with_delimiter_async(self.store, prefix=path_prefix)
             objects = result.get("objects", [])
@@ -306,7 +301,7 @@ class MCPToolsTester:
                     readme_file = {
                         "path": location,
                         "filename": filename,
-                        "size": obj_meta.get("size", 0)
+                        "size": obj_meta.get("size", 0),
                     }
                     break
 
@@ -317,12 +312,7 @@ class MCPToolsTester:
 
                 if readme_resp.status_code == 200:
                     # Tool should include this automatically
-                    expected_readme = {
-                        "found": True,
-                        "content": readme_resp.text,
-                        "size": readme_file["size"],
-                        "path": readme_file["path"]
-                    }
+                    pass  # README content verified to exist
 
             duration_ms = (time.perf_counter() - start_time) * 1000
 
@@ -337,14 +327,17 @@ class MCPToolsTester:
             if has_readme:
                 readme_size = readme_file["size"]
                 print(f"✓ README size: {readme_size} bytes")
-                print(f"✓ Tool now automatically fetches README")
+                print("✓ Tool now automatically fetches README")
 
             return self._record_result(
                 tool_name="get_product_details_auto_readme",
                 success=True,
                 duration_ms=duration_ms,
-                data={"has_readme": has_readme, "readme_size": readme_file["size"] if readme_file else 0},
-                notes="README now automatically included (no parameter needed)"
+                data={
+                    "has_readme": has_readme,
+                    "readme_size": readme_file["size"] if readme_file else 0,
+                },
+                notes="README now automatically included (no parameter needed)",
             )
 
         except Exception as e:
@@ -353,7 +346,7 @@ class MCPToolsTester:
                 tool_name="get_product_details_with_readme",
                 success=False,
                 duration_ms=0,
-                error=str(e)
+                error=str(e),
             )
 
     # ============================================================================
@@ -362,9 +355,9 @@ class MCPToolsTester:
 
     async def test_list_product_files(self) -> TestResult:
         """Test list_product_files() - List all files in a product"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 5: list_product_files()")
-        print("="*80)
+        print("=" * 80)
 
         try:
             start_time = time.perf_counter()
@@ -379,13 +372,15 @@ class MCPToolsTester:
                 location = obj_meta.get("path", "")
 
                 if not location.endswith("/"):
-                    files.append({
-                        "key": location,
-                        "s3_uri": f"s3://{BUCKET}/{location}",
-                        "http_url": f"{DATA_PROXY}/{location}",
-                        "size": obj_meta.get("size", 0),
-                        "last_modified": str(obj_meta.get("last_modified", ""))
-                    })
+                    files.append(
+                        {
+                            "key": location,
+                            "s3_uri": f"s3://{BUCKET}/{location}",
+                            "http_url": f"{DATA_PROXY}/{location}",
+                            "size": obj_meta.get("size", 0),
+                            "last_modified": str(obj_meta.get("last_modified", "")),
+                        }
+                    )
 
             duration_ms = (time.perf_counter() - start_time) * 1000
 
@@ -401,16 +396,13 @@ class MCPToolsTester:
                 success=True,
                 duration_ms=duration_ms,
                 data={"count": len(files), "total_size": sum(f["size"] for f in files)},
-                notes=f"Found {len(files)} files"
+                notes=f"Found {len(files)} files",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="list_product_files",
-                success=False,
-                duration_ms=0,
-                error=str(e)
+                tool_name="list_product_files", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -419,9 +411,9 @@ class MCPToolsTester:
 
     async def test_list_product_files_tree_mode(self) -> TestResult:
         """Test list_product_files() with show_tree=True - Verify token optimization"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 5b: list_product_files(show_tree=True) - Token Optimization")
-        print("="*80)
+        print("=" * 80)
 
         try:
             start_time = time.perf_counter()
@@ -438,14 +430,16 @@ class MCPToolsTester:
                     location = obj_meta.get("path", "")
                     if not location.endswith("/"):
                         # OLD: Full metadata per file
-                        all_files.append({
-                            "key": location,
-                            "s3_uri": f"s3://{BUCKET}/{location}",
-                            "http_url": f"{DATA_PROXY}/{location}",
-                            "size": obj_meta.get("size", 0),
-                            "last_modified": str(obj_meta.get("last_modified", "")),
-                            "etag": obj_meta.get("e_tag"),
-                        })
+                        all_files.append(
+                            {
+                                "key": location,
+                                "s3_uri": f"s3://{BUCKET}/{location}",
+                                "http_url": f"{DATA_PROXY}/{location}",
+                                "size": obj_meta.get("size", 0),
+                                "last_modified": str(obj_meta.get("last_modified", "")),
+                                "etag": obj_meta.get("e_tag"),
+                            }
+                        )
                     if len(all_files) >= 10:  # Limit for test
                         break
                 if len(all_files) >= 10:
@@ -454,16 +448,17 @@ class MCPToolsTester:
             # Build tree (optimized - this is what's returned)
             tree_lines = [f"s3://{BUCKET}/{path_prefix}"]
             for file_info in all_files:
-                filename = file_info['key'].split('/')[-1]
-                size_mb = file_info['size'] / 1024 / 1024
+                filename = file_info["key"].split("/")[-1]
+                size_mb = file_info["size"] / 1024 / 1024
                 tree_lines.append(f"├── {filename} ({size_mb:.2f} MB) → {file_info['s3_uri']}")
 
             tree_str = "\n".join(tree_lines)
 
             # Calculate token savings
             import json
+
             files_json_old = json.dumps(all_files)  # OLD: What we used to return
-            tree_only = tree_str  # NEW: What we return now
+            # NEW: We return only tree_str (already stored above)
 
             duration_ms = (time.perf_counter() - start_time) * 1000
 
@@ -477,18 +472,18 @@ class MCPToolsTester:
             print(f"✓ Duration: {duration_ms:.2f}ms")
             print(f"✓ Files analyzed: {len(all_files)}")
 
-            print(f"\n📊 TOKEN OPTIMIZATION RESULTS:")
-            print(f"  OLD (files + tree): {old_size:,} chars (~{old_size//4:,} tokens)")
-            print(f"  NEW (tree only):    {new_size:,} chars (~{new_size//4:,} tokens)")
-            print(f"  SAVED:              {savings:,} chars (~{savings//4:,} tokens)")
+            print("\n📊 TOKEN OPTIMIZATION RESULTS:")
+            print(f"  OLD (files + tree): {old_size:,} chars (~{old_size // 4:,} tokens)")
+            print(f"  NEW (tree only):    {new_size:,} chars (~{new_size // 4:,} tokens)")
+            print(f"  SAVED:              {savings:,} chars (~{savings // 4:,} tokens)")
             print(f"  EFFICIENCY GAIN:    {savings_pct:.1f}% reduction")
 
-            print(f"\n✅ OPTIMIZATION VERIFIED:")
-            print(f"  • Tree contains: filename, size, full S3 path")
-            print(f"  • No duplicate file metadata")
-            print(f"  • LLM can parse tree for all needed info")
-            print(f"  • For {len(all_files)} files: saved ~{savings//4:,} tokens")
-            print(f"  • For 1000 files: estimated ~{(savings//4)*100:,} token savings")
+            print("\n✅ OPTIMIZATION VERIFIED:")
+            print("  • Tree contains: filename, size, full S3 path")
+            print("  • No duplicate file metadata")
+            print("  • LLM can parse tree for all needed info")
+            print(f"  • For {len(all_files)} files: saved ~{savings // 4:,} tokens")
+            print(f"  • For 1000 files: estimated ~{(savings // 4) * 100:,} token savings")
 
             return self._record_result(
                 tool_name="list_product_files_tree_mode",
@@ -498,19 +493,16 @@ class MCPToolsTester:
                     "files_count": len(all_files),
                     "old_size": old_size,
                     "new_size": new_size,
-                    "tokens_saved": savings//4,
-                    "efficiency_gain_pct": round(savings_pct, 1)
+                    "tokens_saved": savings // 4,
+                    "efficiency_gain_pct": round(savings_pct, 1),
                 },
-                notes=f"Optimized: {savings_pct:.1f}% reduction ({savings//4} tokens saved)"
+                notes=f"Optimized: {savings_pct:.1f}% reduction ({savings // 4} tokens saved)",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="list_product_files_tree_mode",
-                success=False,
-                duration_ms=0,
-                error=str(e)
+                tool_name="list_product_files_tree_mode", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -519,9 +511,9 @@ class MCPToolsTester:
 
     async def test_get_file_metadata(self) -> TestResult:
         """Test get_file_metadata() - Get metadata without downloading"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 6: get_file_metadata()")
-        print("="*80)
+        print("=" * 80)
 
         try:
             start_time = time.perf_counter()
@@ -537,7 +529,7 @@ class MCPToolsTester:
                 "http_url": f"{DATA_PROXY}/{test_key}",
                 "size": obj_meta.get("size"),
                 "last_modified": str(obj_meta.get("last_modified", "")),
-                "etag": obj_meta.get("e_tag")
+                "etag": obj_meta.get("e_tag"),
             }
 
             print(f"✓ Retrieved metadata for {test_key}")
@@ -551,16 +543,13 @@ class MCPToolsTester:
                 success=True,
                 duration_ms=duration_ms,
                 data=file_info,
-                notes=f"Retrieved metadata for {test_key}"
+                notes=f"Retrieved metadata for {test_key}",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="get_file_metadata",
-                success=False,
-                duration_ms=0,
-                error=str(e)
+                tool_name="get_file_metadata", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -569,9 +558,9 @@ class MCPToolsTester:
 
     async def test_search_products(self) -> TestResult:
         """Test search_products() - Search datasets by keywords"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 7: search_products()")
-        print("="*80)
+        print("=" * 80)
 
         try:
             start_time = time.perf_counter()
@@ -604,11 +593,7 @@ class MCPToolsTester:
                     matches.append("product_id")
 
                 if score > 0:
-                    results.append({
-                        **product,
-                        "search_score": score,
-                        "matched_fields": matches
-                    })
+                    results.append({**product, "search_score": score, "matched_fields": matches})
 
             results.sort(key=lambda x: x["search_score"], reverse=True)
             duration_ms = (time.perf_counter() - start_time) * 1000
@@ -626,16 +611,13 @@ class MCPToolsTester:
                 success=True,
                 duration_ms=duration_ms,
                 data={"query": query, "count": len(results)},
-                notes=f"Found {len(results)} results for '{query}'"
+                notes=f"Found {len(results)} results for '{query}'",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="search_products",
-                success=False,
-                duration_ms=0,
-                error=str(e)
+                tool_name="search_products", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -644,9 +626,9 @@ class MCPToolsTester:
 
     async def test_search_products_fuzzy(self) -> TestResult:
         """Test search_products() with fuzzy/similarity matching"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST 8: search_products() - Fuzzy Search")
-        print("="*80)
+        print("=" * 80)
 
         try:
             start_time = time.perf_counter()
@@ -668,12 +650,14 @@ class MCPToolsTester:
                 similarity = SequenceMatcher(None, query_lower, product_id.lower()).ratio()
 
                 if similarity >= 0.6:  # Fuzzy threshold
-                    results.append({
-                        **product,
-                        "search_score": 5 * similarity,
-                        "similarity": similarity,
-                        "matched_fields": ["product_id"]
-                    })
+                    results.append(
+                        {
+                            **product,
+                            "search_score": 5 * similarity,
+                            "similarity": similarity,
+                            "matched_fields": ["product_id"],
+                        }
+                    )
 
             results.sort(key=lambda x: x["similarity"], reverse=True)
             duration_ms = (time.perf_counter() - start_time) * 1000
@@ -683,23 +667,22 @@ class MCPToolsTester:
             print(f"✓ Found {len(results)} fuzzy matches")
 
             if results:
-                print(f"✓ Best match: {results[0]['product_id']} (similarity: {results[0]['similarity']:.2f})")
+                print(
+                    f"✓ Best match: {results[0]['product_id']} (similarity: {results[0]['similarity']:.2f})"
+                )
 
             return self._record_result(
                 tool_name="search_products_fuzzy",
                 success=True,
                 duration_ms=duration_ms,
                 data={"query": query, "count": len(results)},
-                notes=f"Fuzzy search found {len(results)} results"
+                notes=f"Fuzzy search found {len(results)} results",
             )
 
         except Exception as e:
             print(f"✗ Error: {e}")
             return self._record_result(
-                tool_name="search_products_fuzzy",
-                success=False,
-                duration_ms=0,
-                error=str(e)
+                tool_name="search_products_fuzzy", success=False, duration_ms=0, error=str(e)
             )
 
     # ============================================================================
@@ -708,9 +691,9 @@ class MCPToolsTester:
 
     async def run_all_tests(self):
         """Run all MCP tool tests"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("SOURCE COOPERATIVE MCP SERVER - COMPREHENSIVE TEST SUITE")
-        print("="*80)
+        print("=" * 80)
         print(f"Testing against: {BUCKET}")
         print(f"API Base: {API_BASE}")
         print(f"Data Proxy: {DATA_PROXY}")
@@ -732,9 +715,9 @@ class MCPToolsTester:
 
     def print_summary(self):
         """Print comprehensive test summary"""
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("TEST SUMMARY")
-        print("="*80)
+        print("=" * 80)
 
         total_tests = len(self.results)
         passed_tests = sum(1 for r in self.results if r.success)
@@ -743,11 +726,11 @@ class MCPToolsTester:
         print(f"\nTotal Tests: {total_tests}")
         print(f"✓ Passed: {passed_tests}")
         print(f"✗ Failed: {failed_tests}")
-        print(f"Success Rate: {(passed_tests/total_tests)*100:.1f}%")
+        print(f"Success Rate: {(passed_tests / total_tests) * 100:.1f}%")
 
-        print("\n" + "-"*80)
+        print("\n" + "-" * 80)
         print(f"{'Tool Name':<40} {'Status':<10} {'Duration (ms)':<15}")
-        print("-"*80)
+        print("-" * 80)
 
         for result in self.results:
             status = "✓ PASS" if result.success else "✗ FAIL"
@@ -756,16 +739,16 @@ class MCPToolsTester:
             if result.notes:
                 print(f"  └─ {result.notes}")
 
-        print("\n" + "-"*80)
+        print("\n" + "-" * 80)
         print("PERFORMANCE SUMMARY")
-        print("-"*80)
+        print("-" * 80)
 
         successful_results = [r for r in self.results if r.success]
         if successful_results:
             total_duration = sum(r.duration_ms for r in successful_results)
             avg_duration = total_duration / len(successful_results)
 
-            print(f"Total Duration: {total_duration:.2f}ms ({total_duration/1000:.2f}s)")
+            print(f"Total Duration: {total_duration:.2f}ms ({total_duration / 1000:.2f}s)")
             print(f"Average Duration: {avg_duration:.2f}ms")
 
             # Fastest and slowest
@@ -778,15 +761,15 @@ class MCPToolsTester:
         # Failed tests details
         failed_results = [r for r in self.results if not r.success]
         if failed_results:
-            print("\n" + "-"*80)
+            print("\n" + "-" * 80)
             print("FAILED TESTS DETAILS")
-            print("-"*80)
+            print("-" * 80)
 
             for result in failed_results:
                 print(f"\n✗ {result.tool_name}")
                 print(f"  Error: {result.error}")
 
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
 
 
 async def main():

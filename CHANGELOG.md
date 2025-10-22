@@ -32,6 +32,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Token Optimization**: `list_product_files()` with `show_tree=True` now returns only tree visualization (no duplicate file list)
+  - Saves 72.3% tokens (~1,085 tokens for 10 files, ~108,500 tokens for 1,000 files)
+  - Tree contains all necessary information: filenames, sizes, full S3 paths
+  - Optimized for LLM context efficiency in large products
+- **Smart Partition Detection**: Automatically detects and summarizes Hive-style partitions
+  - Detects patterns like `year=2020`, `format=ixi`, `matrix=Z`
+  - Shows `year={2020,2021,...+5 more}` instead of listing all values
+  - Additional 10-88% token savings for heavily partitioned datasets
+- **README Improvements**: Restructured for better clarity and visual appeal
+  - Added Mermaid architecture diagram showing clients → MCP → tools → data sources
+  - Compacted client installation sections (grouped by config similarity)
+  - Added emojis and tables for better readability
+  - Clear visual hierarchy for non-experts
+- Simplified GitHub Actions workflow by moving logic to Python script
+  - Reduced workflow file from 168 to 70 lines
+  - Added `.github/scripts/generate_report.py` for clean separation
+  - Follows modern CI/CD best practices
+
+### Added
+- **Pre-commit Hooks**: Modern comprehensive code quality checks (17 hooks)
+  - **Updated to latest versions**: ruff v0.14.1, pre-commit-hooks v6.0.0
+  - **Git Safety**: Branch protection (main/master), merge conflict detection
+  - **Code Quality**: Ruff linting (auto-fix + exit-non-zero), Ruff formatting
+  - **File Validation**: YAML/TOML/JSON syntax, GitHub workflows validation
+  - **File Hygiene**: End-of-file fixes, trailing whitespace, mixed line endings (LF)
+  - **Security**: Private key detection, large file detection (>1MB)
+  - **Python-Specific**: AST validation, builtin literals, debug statements
+  - **Cross-Platform**: Case conflict detection (macOS/Windows/Linux)
+  - Integrated into GitHub Actions workflow
+
 ## [0.1.0] - 2025-10-19
 
 ### Added

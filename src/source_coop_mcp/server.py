@@ -681,8 +681,135 @@ async def list_product_files(
 
                 return False, None
 
+            def detect_general_file_pattern(items_dict):
+                """
+                Dynamically detect ANY repetitive file naming pattern.
+                Analyzes common structures without hardcoding specific patterns.
+                Returns (is_pattern, pattern_summary, size_range, sample_files) or (False, None, None, None)
+                """
+                if not items_dict or len(items_dict) < 10:  # Need at least 10 files for pattern
+                    return False, None, None, None
+
+                # Collect all files (not directories)
+                files = []
+                for name, value in items_dict.items():
+                    if isinstance(value, dict) and "size" in value:
+                        files.append((name, value["size"], value.get("s3_uri", "")))
+
+                if len(files) < 10:
+                    return False, None, None, None
+
+                # Group files by extension
+                from collections import defaultdict
+
+                by_extension = defaultdict(list)
+                for name, size, s3_uri in files:
+                    if "." in name:
+                        ext = name.rsplit(".", 1)[1]
+                        base = name.rsplit(".", 1)[0]
+                        by_extension[ext].append((base, size, s3_uri, name))
+
+                # Find the largest group
+                largest_group = None
+                largest_ext = None
+                for ext, group in by_extension.items():
+                    if not largest_group or len(group) > len(largest_group):
+                        largest_group = group
+                        largest_ext = ext
+
+                if not largest_group or len(largest_group) < 10:
+                    return False, None, None, None
+
+                # Check if this group represents >60% of all files (more lenient)
+                if len(largest_group) / len(files) <= 0.6:
+                    return False, None, None, None
+
+                # Analyze the naming pattern in the largest group
+                basenames = [item[0] for item in largest_group]
+
+                # Find longest common prefix
+                if not basenames:
+                    return False, None, None, None
+
+                prefix = basenames[0]
+                for name in basenames[1:]:
+                    while prefix and not name.startswith(prefix):
+                        prefix = prefix[:-1]
+
+                # Find longest common suffix
+                suffix = basenames[0][::-1]
+                for name in basenames[1:]:
+                    reversed_name = name[::-1]
+                    while suffix and not reversed_name.startswith(suffix):
+                        suffix = suffix[:-1]
+                suffix = suffix[::-1]
+
+                # Extract varying parts
+                varying_parts = []
+                for basename in basenames:
+                    varying = basename
+                    if prefix:
+                        varying = varying[len(prefix) :]
+                    if suffix:
+                        varying = varying[: -len(suffix)] if suffix else varying
+                    varying_parts.append(varying)
+
+                # Check if we have meaningful variation
+                unique_parts = set(varying_parts)
+
+                # NEW: More flexible check - even with no common prefix/suffix,
+                # if we have many unique variations, it's still a pattern worth summarizing
+                if len(unique_parts) < 3:
+                    return False, None, None, None
+
+                # Calculate size stats
+                sizes = [item[1] for item in largest_group]
+                min_size = min(sizes)
+                max_size = max(sizes)
+                total_size = sum(sizes)
+
+                # Create pattern summary
+                if prefix or suffix:
+                    # We have common prefix/suffix
+                    if len(unique_parts) <= 3:
+                        variations = sorted(unique_parts)
+                        variations_str = ",".join(variations[:3])
+                        pattern_desc = f"{prefix}{{{variations_str}}}{suffix}.{largest_ext}"
+                    else:
+                        sorted_parts = sorted(unique_parts)
+                        pattern_desc = (
+                            f"{prefix}{{{sorted_parts[0]},{sorted_parts[1]},...,"
+                            f"{sorted_parts[-1]} ({len(unique_parts)} variants)}}{suffix}.{largest_ext}"
+                        )
+                else:
+                    # No common prefix/suffix - show samples and count
+                    sorted_parts = sorted(unique_parts)
+                    if len(unique_parts) <= 5:
+                        samples = ",".join(sorted_parts[:5])
+                        pattern_desc = f"{{{samples}}}.{largest_ext}"
+                    else:
+                        pattern_desc = (
+                            f"{{{sorted_parts[0]},{sorted_parts[1]},{sorted_parts[2]},...,"
+                            f"{sorted_parts[-1]} ({len(unique_parts)} coordinate tiles)}}.{largest_ext}"
+                        )
+
+                size_range = {
+                    "min": min_size,
+                    "max": max_size,
+                    "total": total_size,
+                    "count": len(largest_group),
+                }
+
+                # Sample files for reference (full S3 URIs)
+                sample_files = [item[2] for item in largest_group[:3]]  # Get 3 sample S3 URIs
+
+                return True, pattern_desc, size_range, sample_files
+
             def build_tree_lines(node, prefix="", current_path=""):
-                """Recursively build tree visualization with partition, numbered file, and date detection"""
+                """
+                Recursively build tree visualization with smart pattern detection.
+                Detects: numbered files, date directories, general file patterns, and Hive partitions.
+                """
                 lines = []
                 items = sorted(node.items())
 
@@ -745,7 +872,42 @@ async def list_product_files(
 
                     return lines
 
-                # 3. Check for Hive-style partition patterns
+                # 3. Check for general file patterns (e.g., geo-tiles, coordinates, etc.)
+                is_general_pattern, pattern_desc, size_range, sample_files = (
+                    detect_general_file_pattern(node)
+                )
+                if is_general_pattern and pattern_desc and size_range:
+                    # Show summarized general file pattern
+                    min_size_str = format_size(size_range["min"])
+                    max_size_str = format_size(size_range["max"])
+                    total_size_str = format_size(size_range["total"])
+                    count = size_range["count"]
+
+                    full_path = f"{path_prefix}{current_path}".rstrip("/")
+                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{full_path}/"
+                    lines.append(
+                        f"{prefix}├── {pattern_desc} ({count} files, {min_size_str} - {max_size_str}, "
+                        f"total: {total_size_str}) → {dir_s3_path}"
+                    )
+
+                    # Show sample files with full S3 paths for LLM awareness
+                    if sample_files:
+                        lines.append(f"{prefix}│   Sample files:")
+                        for s3_uri in sample_files[:2]:  # Show 2 full examples
+                            lines.append(f"{prefix}│     • {s3_uri}")
+
+                    # Show any non-pattern files or subdirectories
+                    for name, value in items:
+                        if isinstance(value, dict) and "size" not in value:
+                            # Show subdirectories
+                            item_path = f"{current_path}/{name}" if current_path else name
+                            dir_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{item_path}/"
+                            lines.append(f"{prefix}├── {name}/ → {dir_path}")
+                            lines.extend(build_tree_lines(value, prefix + "│   ", item_path))
+
+                    return lines
+
+                # 4. Check for Hive-style partition patterns
                 is_partitioned, pattern_summary = detect_partition_pattern(node)
                 if is_partitioned and pattern_summary:
                     # Show summarized partition pattern instead of all values
@@ -770,7 +932,7 @@ async def list_product_files(
                         )
                     return lines
 
-                # 4. Normal tree building (no patterns detected)
+                # 5. Normal tree building (no patterns detected)
                 for i, (name, value) in enumerate(items):
                     is_last = i == len(items) - 1
                     connector = "└── " if is_last else "├── "

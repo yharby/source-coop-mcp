@@ -695,7 +695,8 @@ async def list_product_files(
                     total_size_str = format_size(size_range["total"])
                     count = size_range["count"]
 
-                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{current_path}/"
+                    full_path = f"{path_prefix}{current_path}".rstrip("/")
+                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{full_path}/"
                     lines.append(
                         f"{prefix}├── {num_pattern} ({count} files, {min_size_str} - {max_size_str}, "
                         f"total: {total_size_str}) → {dir_s3_path}"
@@ -721,7 +722,8 @@ async def list_product_files(
                 is_date_pattern, dates_summary = detect_date_directories(node)
                 if is_date_pattern and dates_summary:
                     # Show summarized date directories
-                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{current_path}/"
+                    full_path = f"{path_prefix}{current_path}".rstrip("/")
+                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{full_path}/"
                     lines.append(f"{prefix}├── {dates_summary} → {dir_s3_path}")
 
                     # Get first date directory to show structure underneath
@@ -750,7 +752,8 @@ async def list_product_files(
                     item_path = (
                         f"{current_path}/{pattern_summary}" if current_path else pattern_summary
                     )
-                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{current_path}/"
+                    full_path = f"{path_prefix}{current_path}".rstrip("/")
+                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{full_path}/"
                     lines.append(f"{prefix}├── {pattern_summary}/ [partitioned] → {dir_s3_path}")
 
                     # Get first item to show structure underneath

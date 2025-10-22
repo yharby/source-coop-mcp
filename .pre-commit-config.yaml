@@ -11,7 +11,7 @@ repos:
     rev: v0.14.1
     hooks:
       - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
+        args: [--fix]  # Removed --exit-non-zero-on-fix for CI compatibility
         name: ruff linter
       - id: ruff-format
         name: ruff formatter

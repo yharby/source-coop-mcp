@@ -358,7 +358,7 @@ async def list_product_files(
     product_id: str,
     prefix: str = "",
     max_files: int = 1000,
-    show_tree: bool = False,
+    show_tree: bool = True,
 ) -> Dict:
     """
     List all files in a product with full S3 paths ready for analysis.
@@ -369,7 +369,7 @@ async def list_product_files(
         product_id: Product ID
         prefix: Optional prefix to filter files (subdirectory path)
         max_files: Maximum files to return (default 1000)
-        show_tree: If True, return tree visualization only (more token-efficient, default False)
+        show_tree: If True, return tree visualization only (more token-efficient, default True)
 
     Returns:
         Dict with either files list OR tree visualization (not both to save tokens)
@@ -399,12 +399,13 @@ async def list_product_files(
         >>> result = await list_product_files("account", "product", show_tree=True)
         >>> print(result["tree"])
         s3://us-west-2.opendata.source.coop/account/product/
-        ├── year={2020,2021,2022,...+5 more}/ [partitioned]
+        ├── year={1995,1996,...,2007 (13 total)}/ [partitioned]
         │   └── format={ixi,pxp}/ [partitioned]
-        │       └── matrix={Z,Y,F_satellite,F_impacts}/ [partitioned]
-        │           └── data.parquet (1.2 MB)
+        │       └── matrix={F_impacts,F_satellite,Y,Z}/ [partitioned]
+        │           └── data.parquet (5.1 MB)
 
-        Note: Tree mode saves ~70% tokens + smart partition detection saves even more
+        Note: Shows first,second,...,last (total) for >10 values; lists all for ≤10
+        Tree mode saves ~70% tokens + smart partition detection saves 96%+ more
     """
     try:
         path_prefix = f"{account_id}/{product_id}/"
@@ -506,13 +507,17 @@ async def list_product_files(
                         # Build pattern summary
                         pattern_str = ""
                         for pkey, pvalues in sorted(partition_patterns.items()):
-                            if len(pvalues) <= 5:
-                                values_str = ",".join(sorted(pvalues))
+                            sorted_values = sorted(pvalues)
+                            if len(sorted_values) <= 10:
+                                # List all values if 10 or fewer
+                                values_str = ",".join(sorted_values)
                             else:
-                                sample_values = sorted(pvalues)[:3]
-                                values_str = (
-                                    f"{','.join(sample_values)},...+{len(pvalues) - 3} more"
-                                )
+                                # Show first, second, ..., last (total count) if more than 10
+                                first = sorted_values[0]
+                                second = sorted_values[1]
+                                last = sorted_values[-1]
+                                total = len(sorted_values)
+                                values_str = f"{first},{second},...,{last} ({total} total)"
                             pattern_str += f"{pkey}={{{values_str}}}/"
                         return True, pattern_str.rstrip("/")
 

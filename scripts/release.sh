@@ -57,13 +57,17 @@ echo -e "${GREEN}Updating pyproject.toml...${NC}"
 sed -i.bak "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" pyproject.toml
 rm pyproject.toml.bak
 
+# Sync uv.lock with new version
+echo -e "${GREEN}Syncing uv.lock...${NC}"
+uv sync --no-install-project
+
 # Run tests
 echo -e "${GREEN}Running tests...${NC}"
 uv run python -u tests/test_all_mcp_tools.py
 
 # Commit version bump (skip branch protection hook)
 echo -e "${GREEN}Committing version bump...${NC}"
-git add pyproject.toml
+git add pyproject.toml uv.lock
 if ! SKIP=no-commit-to-branch git commit -m "chore: bump version to ${NEW_VERSION}"; then
     echo -e "${RED}Failed to commit version bump!${NC}"
     exit 1

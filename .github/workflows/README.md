@@ -2,9 +2,81 @@
 
 ## Overview
 
-Automated CI/CD pipeline for publishing `source-coop-mcp` to PyPI using **Trusted Publishing** (no API tokens required).
+Automated CI/CD pipeline with two workflows:
+1. **Test and Report** - Continuous testing with automatic report generation
+2. **Publish to PyPI** - Automated publishing using **Trusted Publishing** (no API tokens required)
 
-## Workflow: `publish.yml`
+---
+
+## Workflow 1: `test-and-report.yml`
+
+**Purpose**: Automated testing with comprehensive report generation
+
+**Triggers**:
+- Push to `main` or `develop` branches
+- Pull requests to `main`
+- Manual workflow dispatch
+
+**Key Features**:
+- ✅ Runs full test suite with `uv`
+- ✅ Generates Markdown reports (via Python script)
+- ✅ Comments test results on PRs
+- ✅ Stores test reports as artifacts (30 days)
+
+**Quick Links**:
+- [View Workflow File](./test-and-report.yml)
+- [Test Report Example](#test-report-example)
+
+### Jobs: Test → Report → Comment
+
+```mermaid
+graph LR
+    A[Push/PR] --> B[Run Tests]
+    B --> C[Generate Report<br/>Python Script]
+    C --> D[Upload Artifacts]
+    D --> E{Is PR?}
+    E -->|Yes| F[Comment PR]
+    E -->|No| G[End]
+
+    style B fill:#4CAF50,stroke:#2E7D32,stroke-width:2px,color:#fff
+    style C fill:#2196F3,stroke:#1976D2,stroke-width:2px,color:#fff
+    style F fill:#FF9800,stroke:#F57C00,stroke-width:2px,color:#fff
+```
+
+### Test Report Example
+
+The workflow generates a comprehensive Markdown report:
+
+```markdown
+# 🧪 Test Results Report
+
+**Status**: ✅ ALL TESTS PASSED
+**Timestamp**: 2025-10-22 14:30:00 UTC
+**Commit**: abc123...
+**Branch**: main
+
+## 📊 Test Output
+\`\`\`
+TEST 1: list_accounts()
+✓ Found 94 accounts
+✓ Duration: 858ms
+...
+\`\`\`
+
+## 📈 Performance Metrics
+| Tool | Status | Duration |
+|------|--------|----------|
+| list_accounts | ✓ PASS | 858ms |
+\`\`\`
+```
+
+Reports are available:
+- **As PR Comments**: Automatic feedback on pull requests
+- **As Artifacts**: Download from Actions tab (30-day retention)
+
+---
+
+## Workflow 2: `publish.yml`
 
 **Trigger**: When a GitHub release is published
 
@@ -152,9 +224,11 @@ git tag -d v0.1.0
 git push origin --delete v0.1.0
 ```
 
-## Files
+## Files & Directories
 
-- **`publish.yml`** - Main workflow (this directory)
+- **`test-and-report.yml`** - Test automation workflow (simplified, clean)
+- **`publish.yml`** - PyPI publishing workflow
+- **`.github/scripts/generate_report.py`** - Report generation script
 - **`CHANGELOG.md`** - Manual changelog (repo root)
 - **GitHub Release Notes** - Auto-generated (per release)
 
@@ -164,8 +238,53 @@ git push origin --delete v0.1.0
 - [GitHub Actions Publishing](https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/)
 - [Auto-Generated Release Notes](https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes)
 
+## CI/CD Pipeline Summary
+
+```
+┌─────────────────────┐
+│   Developer Push    │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────────────────────┐
+│  Test Workflow (test-and-report)   │
+│  • Run all tests                    │
+│  • Generate reports (Python)        │
+│  • Comment on PR                    │
+│  • Store artifacts                  │
+└──────────┬──────────────────────────┘
+           │
+           │ (All tests pass)
+           ▼
+┌─────────────────────┐
+│  Create Release     │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────────────────────┐
+│  Publish Workflow (publish)         │
+│  • Build package                    │
+│  • Publish to PyPI                  │
+│  • Generate release notes           │
+└─────────────────────────────────────┘
+```
+
+## Best Practices
+
+Both workflows follow modern best practices:
+
+✅ **uv Package Manager** - Faster than pip, built-in caching
+✅ **GitHub Actions v4** - Latest action versions
+✅ **OIDC/Trusted Publishing** - No secrets or tokens
+✅ **Artifact Management** - Reports stored for 30 days
+✅ **Automated Documentation** - Auto-generated reports and notes
+✅ **PR Integration** - Automatic comments with results
+✅ **Conditional Execution** - Only runs necessary steps
+✅ **Proper Permissions** - Minimal required permissions
+✅ **Clean Separation** - Logic in scripts, not in workflows
+
 ---
 
-**Last Updated**: 2025-10-19
-**Workflow Version**: v1.0
+**Last Updated**: 2025-10-22
+**Workflow Version**: v2.0 (added test automation)
 **Maintained by**: @yharby

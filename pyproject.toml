@@ -1,9 +1,9 @@
 [project]
 name = "source-coop-mcp"
-version = "0.1.3"
+version = "0.1.4"
 description = "MCP server for Source Cooperative auto-discovery and data exploration"
 readme = {file = "README.md", content-type = "text/markdown"}
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 authors = [
     {name = "yharby", email = "me@youssefharby.com"}
 ]
@@ -13,6 +13,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -49,7 +50,7 @@ build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"
 
 [dependency-groups]
 dev = [

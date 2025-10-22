@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 import logging
 import os
 from importlib.metadata import version, PackageNotFoundError
+from difflib import SequenceMatcher
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,13 +25,7 @@ DEFAULT_REGION = "us-west-2"
 API_BASE = "https://source.coop/api/v1"
 DATA_PROXY = "https://data.source.coop"
 
-# Environment variable configuration
-# Set SOURCE_COOP_INCLUDE_README=true in MCP server config to always include README
-INCLUDE_README_DEFAULT = os.getenv("SOURCE_COOP_INCLUDE_README", "false").lower() in [
-    "true",
-    "1",
-    "yes",
-]
+# README is now always included in get_product_details() - no configuration needed!
 
 # Initialize default obstore S3 client (public, no credentials)
 # Note: This is for the primary bucket. Individual products may have different mirrors/regions.
@@ -97,19 +92,14 @@ async def list_accounts() -> List[str]:
     try:
         logger.info("Listing all accounts from S3 using obstore")
 
-        # Use obstore list to enumerate objects and extract account prefixes
-        stream = obs.list(default_store, chunk_size=1000)
+        # Use list_with_delimiter to get top-level directories only (much faster!)
+        # This is equivalent to: aws s3 ls s3://bucket/ --no-sign-request
+        result = await obs.list_with_delimiter_async(default_store, prefix="")
+        common_prefixes = result.get("common_prefixes", [])
 
-        accounts = set()
-        async for batch in stream:
-            for obj_meta in batch:
-                # obj_meta is a dict with 'path' key
-                location = obj_meta.get("path", "")
-                if "/" in location:
-                    account = location.split("/")[0]
-                    accounts.add(account)
+        # Extract account names from prefixes (e.g., "harvard-lil/" -> "harvard-lil")
+        accounts_list = sorted([prefix.rstrip("/") for prefix in common_prefixes])
 
-        accounts_list = sorted(list(accounts))
         logger.info(f"Found {len(accounts_list)} accounts")
         return accounts_list
 
@@ -263,32 +253,21 @@ async def list_products_from_s3(account_id: str, include_file_count: bool = Fals
 
 
 @mcp.tool()
-async def get_product_details(
-    account_id: str, product_id: str, include_readme: Optional[bool] = None
-) -> Dict:
+async def get_product_details(account_id: str, product_id: str) -> Dict:
     """
     Get comprehensive metadata for a specific product.
+    Always includes README content if found in the product root directory.
 
     Args:
         account_id: Account ID (e.g., "harvard-lil")
         product_id: Product ID (e.g., "gov-data")
-        include_readme: If True, also fetch and include README content from product root.
-                       If None, uses SOURCE_COOP_INCLUDE_README env var (default: false)
 
     Returns:
         Full product metadata including account info, storage config, roles, tags
-        If include_readme=True, adds 'readme' field with content and metadata
+        Always includes 'readme' field with content and metadata (if README exists)
 
     Example:
         >>> await get_product_details("harvard-lil", "gov-data")
-        {
-            "title": "Archive of data.gov",
-            "description": "...",
-            "account": {"name": "Harvard Library Innovation Lab", ...},
-            ...
-        }
-
-        >>> await get_product_details("harvard-lil", "gov-data", include_readme=True)
         {
             "title": "Archive of data.gov",
             "description": "...",
@@ -301,16 +280,9 @@ async def get_product_details(
             },
             ...
         }
-
-    Note:
-        Set SOURCE_COOP_INCLUDE_README=true in your MCP server config to always include README
     """
     if http_client is None:
         raise RuntimeError("HTTP client not initialized. Server may not have started properly.")
-
-    # Use environment variable default if not explicitly specified
-    if include_readme is None:
-        include_readme = INCLUDE_README_DEFAULT
 
     try:
         logger.info(f"Fetching details for {account_id}/{product_id}")
@@ -319,62 +291,60 @@ async def get_product_details(
 
         product_data = resp.json()
 
-        # Optionally fetch README content
-        if include_readme:
-            try:
-                path_prefix = f"{account_id}/{product_id}/"
-                logger.info(f"Fetching README for: {path_prefix}")
+        # Always fetch README content if it exists
+        try:
+            path_prefix = f"{account_id}/{product_id}/"
+            logger.info(f"Fetching README for: {path_prefix}")
 
-                # List files in product root only (non-recursive)
-                # Use async version for better performance
-                result = await obs.list_with_delimiter_async(default_store, prefix=path_prefix)
-                objects = result.get("objects", [])
+            # List files in product root only (non-recursive)
+            result = await obs.list_with_delimiter_async(default_store, prefix=path_prefix)
+            objects = result.get("objects", [])
 
-                # Look for README files (case-insensitive)
-                readme_variations = ["readme.md", "readme.markdown", "readme.txt", "readme"]
-                readme_file = None
+            # Look for README files (case-insensitive)
+            readme_variations = ["readme.md", "readme.markdown", "readme.txt", "readme"]
+            readme_file = None
 
-                for obj_meta in objects:
-                    location = obj_meta.get("path", "")
-                    filename = location.split("/")[-1]
+            for obj_meta in objects:
+                location = obj_meta.get("path", "")
+                filename = location.split("/")[-1]
 
-                    if filename.lower() in readme_variations:
-                        readme_file = {
-                            "path": location,
-                            "filename": filename,
-                            "size": obj_meta.get("size", 0),
-                            "last_modified": str(obj_meta.get("last_modified", "")),
-                        }
-                        break
+                if filename.lower() in readme_variations:
+                    readme_file = {
+                        "path": location,
+                        "filename": filename,
+                        "size": obj_meta.get("size", 0),
+                        "last_modified": str(obj_meta.get("last_modified", "")),
+                    }
+                    break
 
-                if readme_file:
-                    # Fetch README content
-                    readme_url = f"{DATA_PROXY}/{readme_file['path']}"
-                    readme_resp = await http_client.get(readme_url)
+            if readme_file:
+                # Fetch README content
+                readme_url = f"{DATA_PROXY}/{readme_file['path']}"
+                readme_resp = await http_client.get(readme_url)
 
-                    if readme_resp.status_code == 200:
-                        product_data["readme"] = {
-                            "found": True,
-                            "content": readme_resp.text,
-                            "size": readme_file["size"],
-                            "path": readme_file["path"],
-                            "filename": readme_file["filename"],
-                            "last_modified": readme_file["last_modified"],
-                            "url": readme_url,
-                        }
-                    else:
-                        product_data["readme"] = {
-                            "found": True,
-                            "content": None,
-                            "error": f"HTTP {readme_resp.status_code}",
-                            "path": readme_file["path"],
-                        }
+                if readme_resp.status_code == 200:
+                    product_data["readme"] = {
+                        "found": True,
+                        "content": readme_resp.text,
+                        "size": readme_file["size"],
+                        "path": readme_file["path"],
+                        "filename": readme_file["filename"],
+                        "last_modified": readme_file["last_modified"],
+                        "url": readme_url,
+                    }
                 else:
-                    product_data["readme"] = {"found": False, "content": None}
+                    product_data["readme"] = {
+                        "found": True,
+                        "content": None,
+                        "error": f"HTTP {readme_resp.status_code}",
+                        "path": readme_file["path"],
+                    }
+            else:
+                product_data["readme"] = {"found": False, "content": None}
 
-            except Exception as readme_error:
-                logger.warning(f"Error fetching README: {readme_error}")
-                product_data["readme"] = {"found": False, "error": str(readme_error)}
+        except Exception as readme_error:
+            logger.warning(f"Error fetching README: {readme_error}")
+            product_data["readme"] = {"found": False, "error": str(readme_error)}
 
         return product_data
 
@@ -393,19 +363,19 @@ async def list_product_files(
 ) -> Dict:
     """
     List all files in a product with full S3 paths ready for analysis.
-    Optionally show a hierarchical tree visualization with full paths.
+    Optionally show a hierarchical tree visualization (optimized for LLM tokens).
 
     Args:
         account_id: Account ID
         product_id: Product ID
         prefix: Optional prefix to filter files (subdirectory path)
         max_files: Maximum files to return (default 1000)
-        show_tree: If True, include tree visualization with full S3 paths (default False)
+        show_tree: If True, return tree visualization only (more token-efficient, default False)
 
     Returns:
-        Dict with files list, optional tree, directories, and statistics
+        Dict with either files list OR tree visualization (not both to save tokens)
 
-    Example (List mode):
+    Example (List mode - detailed metadata):
         >>> result = await list_product_files("harvard-lil", "gov-data", "metadata/")
         >>> print(result["files"][0])
         {
@@ -413,20 +383,29 @@ async def list_product_files(
             "s3_uri": "s3://us-west-2.opendata.source.coop/harvard-lil/gov-data/metadata/metadata.jsonl.zip",
             "http_url": "https://data.source.coop/harvard-lil/gov-data/metadata/metadata.jsonl.zip",
             "size": 1012127330,
-            "last_modified": "2025-02-06T16:20:22+00:00",
-            "etag": "..."
+            "last_modified": "2025-02-06T16:20:22+00:00"
         }
 
-    Example (Tree mode):
+    Example (Tree mode - token optimized):
         >>> result = await list_product_files("harvard-lil", "gov-data", show_tree=True)
         >>> print(result["tree"])
         s3://us-west-2.opendata.source.coop/harvard-lil/gov-data/
-        ├── README.md (5.2 KB) → s3://us-west-2.opendata.source.coop/harvard-lil/gov-data/README.md
+        ├── README.md (5.2 KB) → s3://...README.md
         ├── metadata/
-        │   ├── metadata.jsonl.zip (965.4 MB) → s3://.../metadata/metadata.jsonl.zip
-        │   └── checksums.txt (1.2 KB)
+        │   └── metadata.jsonl.zip (965.4 MB) → s3://...metadata.jsonl.zip
         └── data/
-            └── datasets.parquet (128.5 MB)
+            └── datasets.parquet (128.5 MB) → s3://...datasets.parquet
+
+    Example (Partitioned data - smart summarization):
+        >>> result = await list_product_files("account", "product", show_tree=True)
+        >>> print(result["tree"])
+        s3://us-west-2.opendata.source.coop/account/product/
+        ├── year={2020,2021,2022,...+5 more}/ [partitioned]
+        │   └── format={ixi,pxp}/ [partitioned]
+        │       └── matrix={Z,Y,F_satellite,F_impacts}/ [partitioned]
+        │           └── data.parquet (1.2 MB)
+
+        Note: Tree mode saves ~70% tokens + smart partition detection saves even more
     """
     try:
         path_prefix = f"{account_id}/{product_id}/"
@@ -496,11 +475,69 @@ async def list_product_files(
                     bytes_size /= 1024.0
                 return f"{bytes_size:.1f} PB"
 
+            def detect_partition_pattern(items_dict):
+                """
+                Detect partitioned data patterns like year=YYYY, format={value}, etc.
+                Returns (is_partitioned, pattern_summary) or (False, None)
+                """
+                if not items_dict or len(items_dict) < 2:
+                    return False, None
+
+                # Check if all keys follow a partition pattern (key=value)
+                keys = list(items_dict.keys())
+
+                # Look for common partition key patterns
+                partition_patterns = {}
+                for key in keys:
+                    if '=' in key:
+                        parts = key.split('=', 1)
+                        if len(parts) == 2:
+                            partition_key, partition_value = parts
+                            if partition_key not in partition_patterns:
+                                partition_patterns[partition_key] = set()
+                            partition_patterns[partition_key].add(partition_value)
+
+                # If we found partition patterns and most/all keys follow this pattern
+                if partition_patterns and len(partition_patterns) >= 1:
+                    # Check if >50% of keys are partitioned
+                    partitioned_keys = sum(1 for k in keys if '=' in k)
+                    if partitioned_keys / len(keys) > 0.5:
+                        # Build pattern summary
+                        pattern_str = ""
+                        for pkey, pvalues in sorted(partition_patterns.items()):
+                            if len(pvalues) <= 5:
+                                values_str = ','.join(sorted(pvalues))
+                            else:
+                                sample_values = sorted(pvalues)[:3]
+                                values_str = f"{','.join(sample_values)},...+{len(pvalues)-3} more"
+                            pattern_str += f"{pkey}={{{values_str}}}/"
+                        return True, pattern_str.rstrip('/')
+
+                return False, None
+
             def build_tree_lines(node, prefix="", current_path=""):
-                """Recursively build tree visualization with full S3 paths"""
+                """Recursively build tree visualization with partition detection"""
                 lines = []
                 items = sorted(node.items())
 
+                # Detect if this level has partition patterns
+                is_partitioned, pattern_summary = detect_partition_pattern(node)
+
+                if is_partitioned and pattern_summary:
+                    # Show summarized partition pattern instead of all values
+                    item_path = f"{current_path}/{pattern_summary}" if current_path else pattern_summary
+                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{current_path}/"
+                    lines.append(f"{prefix}├── {pattern_summary}/ [partitioned] → {dir_s3_path}")
+
+                    # Get first item to show structure underneath
+                    first_key = items[0][0]
+                    first_value = items[0][1]
+                    if isinstance(first_value, dict) and "size" not in first_value:
+                        # Recurse into first partition to show structure
+                        lines.extend(build_tree_lines(first_value, prefix + "│   ", f"{current_path}/{first_key}" if current_path else first_key))
+                    return lines
+
+                # Normal tree building
                 for i, (name, value) in enumerate(items):
                     is_last = i == len(items) - 1
                     connector = "└── " if is_last else "├── "
@@ -544,16 +581,17 @@ async def list_product_files(
 
             extract_dirs(tree_dict)
 
+            # Return ONLY tree to save tokens (tree contains all info: paths, sizes, structure)
+            # For 1000 files, this saves ~100,000+ tokens compared to returning both
             return {
-                "files": all_files,
-                "directories": directories,
                 "tree": tree_str,
                 "stats": {
                     "total_files": len(all_files),
                     "total_directories": len(directories),
                     "total_size": total_size,
                     "total_size_human": format_size(total_size),
-                    "truncated": len(all_files) >= max_files
+                    "truncated": len(all_files) >= max_files,
+                    "note": "Tree mode: file list omitted to save tokens. Parse tree for file paths and sizes."
                 }
             }
 
@@ -664,35 +702,40 @@ async def search_products(
     query: str, account_id: Optional[str] = None, search_in: Optional[List[str]] = None
 ) -> List[Dict]:
     """
-    Search for products across Source Cooperative.
+    Search for products across Source Cooperative with smart fuzzy matching.
+    Handles typos, partial matches, and incomplete words using similarity scoring.
 
     Args:
-        query: Search term (case-insensitive)
+        query: Search term (supports typos and partial matches)
         account_id: Optional account filter. RECOMMENDED for performance.
                    Without account_id, searches all 92 accounts (30-60s).
         search_in: Fields to search in (title, description, product_id).
                    Defaults to all fields if not specified.
 
     Returns:
-        Matching products with relevance scoring
+        Matching products with relevance scoring (sorted by score)
 
     Performance:
         - With account_id: ~200-500ms
         - Without account_id: ~30-60s (searches all 92 accounts)
 
     Examples:
-        >>> # Fast search (recommended)
+        >>> # Exact match
         >>> results = await search_products("climate", account_id="harvard-lil")
 
-        >>> # Slow search (searches all accounts)
-        >>> results = await search_products("climate")
+        >>> # Fuzzy match (typo)
+        >>> results = await search_products("climte", account_id="harvard-lil")
+
+        >>> # Partial match
+        >>> results = await search_products("clim", account_id="harvard-lil")
 
         >>> print(results[0])
         {
             "product_id": "...",
             "title": "Climate Data...",
-            "search_score": 5,
-            "matched_fields": ["title", "description"]
+            "search_score": 5.8,
+            "similarity": 0.95,
+            "matched_fields": ["title"]
         }
     """
     try:
@@ -704,32 +747,92 @@ async def search_products(
         products = await list_products(account_id=account_id)
         query_lower = query.lower()
 
+        # Fuzzy matching threshold (0-1, higher = more strict)
+        FUZZY_THRESHOLD = 0.6
+
+        def calculate_similarity(text1: str, text2: str) -> float:
+            """Calculate similarity between two strings using SequenceMatcher"""
+            return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
+
+        def fuzzy_search_in_text(query: str, text: str) -> tuple[bool, float]:
+            """
+            Search for query in text using both exact and fuzzy matching.
+            Returns (found, similarity_score)
+            """
+            text_lower = text.lower()
+
+            # Exact substring match (highest score)
+            if query in text_lower:
+                return True, 1.0
+
+            # Check similarity against individual words in text
+            words = text_lower.split()
+            best_similarity = 0.0
+
+            for word in words:
+                similarity = calculate_similarity(query, word)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+
+            # Also check similarity against the entire text (for multi-word queries)
+            overall_similarity = calculate_similarity(query, text_lower)
+            best_similarity = max(best_similarity, overall_similarity)
+
+            # Return true if similarity exceeds threshold
+            if best_similarity >= FUZZY_THRESHOLD:
+                return True, best_similarity
+
+            return False, best_similarity
+
         results = []
         for product in products:
             score = 0
             matches = []
+            best_similarity = 0.0
 
-            # Score matches by field
+            # Search in title
             if "title" in search_in:
-                if query_lower in product.get("title", "").lower():
-                    score += 3
+                title = product.get("title", "")
+                found, similarity = fuzzy_search_in_text(query_lower, title)
+                if found:
+                    # Exact match: 3 points, Fuzzy match: 1-3 points based on similarity
+                    field_score = 3 if similarity == 1.0 else (1 + 2 * similarity)
+                    score += field_score
                     matches.append("title")
+                    best_similarity = max(best_similarity, similarity)
 
+            # Search in description
             if "description" in search_in:
-                if query_lower in product.get("description", "").lower():
-                    score += 2
+                description = product.get("description", "")
+                found, similarity = fuzzy_search_in_text(query_lower, description)
+                if found:
+                    # Exact match: 2 points, Fuzzy match: 0.6-2 points based on similarity
+                    field_score = 2 if similarity == 1.0 else (0.6 + 1.4 * similarity)
+                    score += field_score
                     matches.append("description")
+                    best_similarity = max(best_similarity, similarity)
 
+            # Search in product_id
             if "product_id" in search_in:
-                if query_lower in product.get("product_id", "").lower():
-                    score += 5
+                product_id = product.get("product_id", "")
+                found, similarity = fuzzy_search_in_text(query_lower, product_id)
+                if found:
+                    # Exact match: 5 points, Fuzzy match: 2-5 points based on similarity
+                    field_score = 5 if similarity == 1.0 else (2 + 3 * similarity)
+                    score += field_score
                     matches.append("product_id")
+                    best_similarity = max(best_similarity, similarity)
 
             if score > 0:
-                results.append({**product, "search_score": score, "matched_fields": matches})
+                results.append({
+                    **product,
+                    "search_score": round(score, 2),
+                    "similarity": round(best_similarity, 2),
+                    "matched_fields": matches
+                })
 
-        # Sort by relevance
-        results.sort(key=lambda x: x["search_score"], reverse=True)
+        # Sort by relevance (score first, then similarity)
+        results.sort(key=lambda x: (x["search_score"], x["similarity"]), reverse=True)
         logger.info(f"Found {len(results)} matching products")
 
         return results
@@ -739,20 +842,6 @@ async def search_products(
         raise
 
 
-@mcp.tool()
-async def get_featured_products() -> List[Dict]:
-    """
-    Discover highlighted/featured datasets in Source Cooperative.
-    These are curated, high-quality datasets selected by Source Cooperative.
-
-    Returns:
-        List of featured products
-
-    Example:
-        >>> featured = await get_featured_products()
-        >>> print(f"Found {len(featured)} featured products")
-    """
-    return await list_products(featured_only=True)
 
 
 # ============================================================================

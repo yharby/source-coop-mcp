@@ -9,3 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .vscode/
+
+# Test outputs
+test_output.txt
+test_report.md

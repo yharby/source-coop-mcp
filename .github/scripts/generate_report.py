@@ -5,6 +5,7 @@ import os
 import re
 from datetime import datetime
 
+
 def generate_report():
     """Generate markdown report from test_output.txt."""
 
@@ -36,7 +37,7 @@ def generate_report():
 
     if match := re.search(r"Total Duration: ([\d.]+)ms", test_output):
         duration_ms = float(match.group(1))
-        duration = f"{duration_ms/1000:.2f}s"
+        duration = f"{duration_ms / 1000:.2f}s"
 
     # Determine status
     status = "✅ ALL TESTS PASSED" if "Success Rate: 100" in test_output else "❌ SOME TESTS FAILED"
@@ -49,11 +50,11 @@ def generate_report():
     repo = os.getenv("GITHUB_REPOSITORY", "")
     server_url = os.getenv("GITHUB_SERVER_URL", "https://github.com")
 
-    # Build report
+    # Build report with comprehensive output (always visible for PR comments)
     report = f"""# 🧪 Test Results
 
 **Status**: {status}
-**Time**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+**Time**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")}
 **Commit**: `{commit}`
 **Branch**: `{branch}`
 
@@ -67,16 +68,11 @@ def generate_report():
 | Success Rate | {success_rate} |
 | Duration | {duration} |
 
-## 📝 Full Output
-
-<details>
-<summary>Click to expand test output</summary>
+## 📝 Comprehensive Test Output
 
 ```
 {test_output}
 ```
-
-</details>
 
 ---
 
@@ -91,6 +87,7 @@ def generate_report():
         f.write(report)
 
     print("✅ Report generated: test_report.md")
+
 
 if __name__ == "__main__":
     generate_report()

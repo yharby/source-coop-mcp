@@ -73,8 +73,11 @@ Technical documentation for contributors and developers.
 git clone https://github.com/yharby/source-coop-mcp.git
 cd source-coop-mcp
 
-# Install with uv
+# Install with uv (includes dev dependencies)
 uv sync
+
+# Install pre-commit hooks
+uv run pre-commit install
 
 # Run tests
 uv run python -u tests/test_all_mcp_tools.py
@@ -154,7 +157,55 @@ Total Duration: 6.58s
 
 ## Code Quality
 
-### Formatting and Linting
+### Pre-commit Hooks
+
+**Automatic code quality checks** run before every commit:
+
+```bash
+# Install hooks (one-time setup)
+uv run pre-commit install
+
+# Manually run on all files
+uv run pre-commit run --all-files
+
+# Update hook versions
+uv run pre-commit autoupdate
+```
+
+**Hooks include (17 total):**
+
+*Git Safety:*
+- ✅ Branch protection (prevents commits to main/master)
+- ✅ Merge conflict detection
+
+*Code Quality:*
+- ✅ Ruff linting (with auto-fix and exit-non-zero)
+- ✅ Ruff formatting
+
+*File Format Validation:*
+- ✅ YAML syntax check (multi-document support)
+- ✅ TOML syntax check (pyproject.toml)
+- ✅ JSON syntax check
+- ✅ GitHub workflows validation
+
+*File Hygiene:*
+- ✅ End-of-file newline enforcement
+- ✅ Trailing whitespace removal (markdown-aware)
+- ✅ Mixed line ending fixes (LF enforced)
+
+*Security:*
+- ✅ Private key detection
+- ✅ Large file detection (>1MB)
+
+*Python-Specific:*
+- ✅ AST syntax validation
+- ✅ Builtin literals check
+- ✅ Debug statements detection
+
+*Cross-Platform:*
+- ✅ Case conflict detection (macOS/Windows/Linux)
+
+### Manual Checks
 
 ```bash
 # Format code
@@ -172,6 +223,8 @@ uv run ruff check --fix .
 - **Line length**: 100 characters
 - **Target**: Python 3.11+
 - **Formatter**: Ruff
+- **Linter**: Ruff
+- **Pre-commit**: Enabled
 - **Type hints**: Encouraged (not enforced)
 
 ---
@@ -243,12 +296,18 @@ search_products("climate")  # ~60s
 
 1. **Fork** the repository
 2. **Create** feature branch: `git checkout -b feature/my-feature`
-3. **Make** changes
-4. **Test**: `uv run python -u tests/test_all_mcp_tools.py`
-5. **Lint**: `uv run ruff check --fix .`
-6. **Commit**: Descriptive commit messages
+3. **Install** pre-commit hooks: `uv run pre-commit install`
+4. **Make** changes
+5. **Test**: `uv run python -u tests/test_all_mcp_tools.py`
+6. **Commit**: Pre-commit hooks run automatically (lint, format, checks)
 7. **Push**: `git push origin feature/my-feature`
 8. **PR**: Create pull request
+
+**Note**: Pre-commit hooks will automatically:
+- Format code with ruff
+- Fix linting issues
+- Check YAML syntax
+- Prevent commits to main branch
 
 ### Commit Message Format
 

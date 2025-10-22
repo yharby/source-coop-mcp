@@ -11,7 +11,6 @@ from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 import logging
-import os
 from importlib.metadata import version, PackageNotFoundError
 from difflib import SequenceMatcher
 
@@ -54,7 +53,7 @@ async def lifespan(app: FastMCP) -> AsyncIterator[None]:
         logger.info(f"Starting Source Cooperative MCP Server v{pkg_version}")
     except PackageNotFoundError:
         logger.info("Starting Source Cooperative MCP Server")
-    
+
     logger.info("Initializing Source Cooperative MCP Server")
     http_client = httpx.AsyncClient(timeout=30.0)
     logger.info("HTTP client initialized")
@@ -359,7 +358,7 @@ async def list_product_files(
     product_id: str,
     prefix: str = "",
     max_files: int = 1000,
-    show_tree: bool = False
+    show_tree: bool = False,
 ) -> Dict:
     """
     List all files in a product with full S3 paths ready for analysis.
@@ -427,14 +426,16 @@ async def list_product_files(
                     if location.endswith("/"):
                         continue
 
-                    all_files.append({
-                        "key": location,
-                        "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
-                        "http_url": f"{DATA_PROXY}/{location}",
-                        "size": obj_meta.get("size", 0),
-                        "last_modified": str(obj_meta.get("last_modified", "")),
-                        "etag": obj_meta.get("e_tag"),
-                    })
+                    all_files.append(
+                        {
+                            "key": location,
+                            "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
+                            "http_url": f"{DATA_PROXY}/{location}",
+                            "size": obj_meta.get("size", 0),
+                            "last_modified": str(obj_meta.get("last_modified", "")),
+                            "etag": obj_meta.get("e_tag"),
+                        }
+                    )
 
                     if len(all_files) >= max_files:
                         break
@@ -452,7 +453,7 @@ async def list_product_files(
                 total_size += size
 
                 # Split path into parts (remove prefix)
-                relative_path = path[len(path_prefix):]
+                relative_path = path[len(path_prefix) :]
                 parts = relative_path.split("/")
 
                 # Build nested dictionary
@@ -489,8 +490,8 @@ async def list_product_files(
                 # Look for common partition key patterns
                 partition_patterns = {}
                 for key in keys:
-                    if '=' in key:
-                        parts = key.split('=', 1)
+                    if "=" in key:
+                        parts = key.split("=", 1)
                         if len(parts) == 2:
                             partition_key, partition_value = parts
                             if partition_key not in partition_patterns:
@@ -500,18 +501,20 @@ async def list_product_files(
                 # If we found partition patterns and most/all keys follow this pattern
                 if partition_patterns and len(partition_patterns) >= 1:
                     # Check if >50% of keys are partitioned
-                    partitioned_keys = sum(1 for k in keys if '=' in k)
+                    partitioned_keys = sum(1 for k in keys if "=" in k)
                     if partitioned_keys / len(keys) > 0.5:
                         # Build pattern summary
                         pattern_str = ""
                         for pkey, pvalues in sorted(partition_patterns.items()):
                             if len(pvalues) <= 5:
-                                values_str = ','.join(sorted(pvalues))
+                                values_str = ",".join(sorted(pvalues))
                             else:
                                 sample_values = sorted(pvalues)[:3]
-                                values_str = f"{','.join(sample_values)},...+{len(pvalues)-3} more"
+                                values_str = (
+                                    f"{','.join(sample_values)},...+{len(pvalues) - 3} more"
+                                )
                             pattern_str += f"{pkey}={{{values_str}}}/"
-                        return True, pattern_str.rstrip('/')
+                        return True, pattern_str.rstrip("/")
 
                 return False, None
 
@@ -525,7 +528,9 @@ async def list_product_files(
 
                 if is_partitioned and pattern_summary:
                     # Show summarized partition pattern instead of all values
-                    item_path = f"{current_path}/{pattern_summary}" if current_path else pattern_summary
+                    item_path = (
+                        f"{current_path}/{pattern_summary}" if current_path else pattern_summary
+                    )
                     dir_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{current_path}/"
                     lines.append(f"{prefix}├── {pattern_summary}/ [partitioned] → {dir_s3_path}")
 
@@ -534,7 +539,13 @@ async def list_product_files(
                     first_value = items[0][1]
                     if isinstance(first_value, dict) and "size" not in first_value:
                         # Recurse into first partition to show structure
-                        lines.extend(build_tree_lines(first_value, prefix + "│   ", f"{current_path}/{first_key}" if current_path else first_key))
+                        lines.extend(
+                            build_tree_lines(
+                                first_value,
+                                prefix + "│   ",
+                                f"{current_path}/{first_key}" if current_path else first_key,
+                            )
+                        )
                     return lines
 
                 # Normal tree building
@@ -567,16 +578,19 @@ async def list_product_files(
 
             # Get directory list
             directories = []
+
             def extract_dirs(node, current_path=""):
                 for name, value in node.items():
                     if isinstance(value, dict) and "size" not in value:
                         dir_path = f"{current_path}/{name}" if current_path else name
                         full_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{dir_path}/"
-                        directories.append({
-                            "name": name,
-                            "path": f"{path_prefix}{dir_path}/",
-                            "s3_uri": full_s3_path
-                        })
+                        directories.append(
+                            {
+                                "name": name,
+                                "path": f"{path_prefix}{dir_path}/",
+                                "s3_uri": full_s3_path,
+                            }
+                        )
                         extract_dirs(value, dir_path)
 
             extract_dirs(tree_dict)
@@ -591,8 +605,8 @@ async def list_product_files(
                     "total_size": total_size,
                     "total_size_human": format_size(total_size),
                     "truncated": len(all_files) >= max_files,
-                    "note": "Tree mode: file list omitted to save tokens. Parse tree for file paths and sizes."
-                }
+                    "note": "Tree mode: file list omitted to save tokens. Parse tree for file paths and sizes.",
+                },
             }
 
         else:
@@ -612,34 +626,35 @@ async def list_product_files(
                 if location.endswith("/"):
                     continue
 
-                files.append({
-                    "key": location,
-                    "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
-                    "http_url": f"{DATA_PROXY}/{location}",
-                    "size": obj_meta.get("size", 0),
-                    "last_modified": str(obj_meta.get("last_modified", "")),
-                    "etag": obj_meta.get("e_tag"),
-                })
+                files.append(
+                    {
+                        "key": location,
+                        "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
+                        "http_url": f"{DATA_PROXY}/{location}",
+                        "size": obj_meta.get("size", 0),
+                        "last_modified": str(obj_meta.get("last_modified", "")),
+                        "etag": obj_meta.get("e_tag"),
+                    }
+                )
 
             # Extract directories from common prefixes
             directories = []
             for prefix_path in common_prefixes:
                 dir_name = prefix_path.rstrip("/").split("/")[-1]
-                directories.append({
-                    "name": dir_name,
-                    "path": prefix_path,
-                    "s3_uri": f"s3://{DEFAULT_BUCKET}/{prefix_path}"
-                })
+                directories.append(
+                    {
+                        "name": dir_name,
+                        "path": prefix_path,
+                        "s3_uri": f"s3://{DEFAULT_BUCKET}/{prefix_path}",
+                    }
+                )
 
             logger.info(f"Found {len(files)} files and {len(directories)} directories")
 
             return {
                 "files": files,
                 "directories": directories,
-                "stats": {
-                    "total_files": len(files),
-                    "total_directories": len(directories)
-                }
+                "stats": {"total_files": len(files), "total_directories": len(directories)},
             }
 
     except Exception as e:
@@ -824,12 +839,14 @@ async def search_products(
                     best_similarity = max(best_similarity, similarity)
 
             if score > 0:
-                results.append({
-                    **product,
-                    "search_score": round(score, 2),
-                    "similarity": round(best_similarity, 2),
-                    "matched_fields": matches
-                })
+                results.append(
+                    {
+                        **product,
+                        "search_score": round(score, 2),
+                        "similarity": round(best_similarity, 2),
+                        "matched_fields": matches,
+                    }
+                )
 
         # Sort by relevance (score first, then similarity)
         results.sort(key=lambda x: (x["search_score"], x["similarity"]), reverse=True)
@@ -840,8 +857,6 @@ async def search_products(
     except Exception as e:
         logger.error(f"Error searching products: {e}")
         raise
-
-
 
 
 # ============================================================================

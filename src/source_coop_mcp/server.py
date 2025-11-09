@@ -487,31 +487,79 @@ async def list_product_files(
         logger.info(f"Listing files with prefix: {path_prefix} using obstore")
 
         if show_tree:
-            # Recursive listing for tree view
-            stream = obs.list(default_store, prefix=path_prefix, chunk_size=1000)
+            # Hybrid two-level listing for tree view
+            # Level 1: Delimiter listing at root to ensure all top-level items visible
+            # Level 2+: Flat recursive listing per subdirectory with individual limits
+            logger.info("Using hybrid two-level listing for tree view")
 
             all_files = []
-            async for batch in stream:
-                for obj_meta in batch:
-                    location = obj_meta.get("path", "")
 
-                    # Skip directory markers
-                    if location.endswith("/"):
-                        continue
+            # First, get top-level structure with delimiter listing
+            root_result = await obs.list_with_delimiter_async(default_store, prefix=path_prefix)
 
-                    all_files.append(
-                        {
-                            "key": location,
-                            "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
-                            "http_url": f"{DATA_PROXY}/{location}",
-                            "size": obj_meta.get("size", 0),
-                            "last_modified": str(obj_meta.get("last_modified", "")),
-                            "etag": obj_meta.get("e_tag"),
-                        }
-                    )
+            # Add root-level files (always included)
+            root_files = []
+            for obj_meta in root_result.get("objects", []):
+                location = obj_meta.get("path", "")
+                if location.endswith("/"):
+                    continue
 
-                    if len(all_files) >= max_files:
+                root_files.append(
+                    {
+                        "key": location,
+                        "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
+                        "http_url": f"{DATA_PROXY}/{location}",
+                        "size": obj_meta.get("size", 0),
+                        "last_modified": str(obj_meta.get("last_modified", "")),
+                        "etag": obj_meta.get("e_tag"),
+                    }
+                )
+
+            all_files.extend(root_files)
+            logger.info(f"Found {len(root_files)} root-level files")
+
+            # Get subdirectories
+            subdirs = root_result.get("common_prefixes", [])
+            logger.info(f"Found {len(subdirs)} top-level subdirectories")
+
+            # For each subdirectory, do limited recursive listing
+            # Distribute max_files budget across subdirectories
+            remaining_budget = max_files - len(root_files)
+            files_per_dir = max(50, remaining_budget // max(len(subdirs), 1)) if subdirs else 0
+
+            for subdir_prefix in subdirs:
+                if len(all_files) >= max_files:
+                    break
+
+                # Use flat recursive listing for this subdirectory
+                stream = obs.list(default_store, prefix=subdir_prefix, chunk_size=1000)
+
+                subdir_files = []
+                async for batch in stream:
+                    for obj_meta in batch:
+                        location = obj_meta.get("path", "")
+                        if location.endswith("/"):
+                            continue
+
+                        subdir_files.append(
+                            {
+                                "key": location,
+                                "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
+                                "http_url": f"{DATA_PROXY}/{location}",
+                                "size": obj_meta.get("size", 0),
+                                "last_modified": str(obj_meta.get("last_modified", "")),
+                                "etag": obj_meta.get("e_tag"),
+                            }
+                        )
+
+                        if len(subdir_files) >= files_per_dir:
+                            break
+
+                    if len(subdir_files) >= files_per_dir:
                         break
+
+                all_files.extend(subdir_files)
+                logger.info(f"Added {len(subdir_files)} files from {subdir_prefix}")
 
                 if len(all_files) >= max_files:
                     break

@@ -487,17 +487,42 @@ async def list_product_files(
         logger.info(f"Listing files with prefix: {path_prefix} using obstore")
 
         if show_tree:
-            # Hybrid two-level listing for tree view
-            # Level 1: Delimiter listing at root to ensure all top-level items visible
-            # Level 2+: Flat recursive listing per subdirectory with individual limits
-            logger.info("Using hybrid two-level listing for tree view")
+            # Directory-first tree discovery: Guarantees ALL directories are visible
+            # Step 1: Recursively discover complete directory structure
+            # Step 2: Sample files from each directory branch
+            logger.info("Using directory-first tree discovery for complete visibility")
 
             all_files = []
+            all_directories = []  # Track ALL discovered directories
 
-            # First, get top-level structure with delimiter listing
+            # Recursive function to discover ALL directories at all levels
+            async def discover_directories(prefix_to_scan, max_depth=5, current_depth=0):
+                """Recursively discover all directories using delimiter listing"""
+                if current_depth >= max_depth:
+                    return
+
+                try:
+                    result = await obs.list_with_delimiter_async(
+                        default_store, prefix=prefix_to_scan
+                    )
+
+                    # Get subdirectories at this level
+                    subdirs = result.get("common_prefixes", [])
+                    for subdir in subdirs:
+                        all_directories.append(subdir)
+                        # Recurse into subdirectory to discover its children
+                        await discover_directories(subdir, max_depth, current_depth + 1)
+
+                except Exception as e:
+                    logger.warning(f"Error discovering directories in {prefix_to_scan}: {e}")
+
+            # Step 1: Discover ALL directories recursively (fast with delimiter listing)
+            logger.info("Step 1: Discovering all directories...")
+            await discover_directories(path_prefix, max_depth=5)
+            logger.info(f"Discovered {len(all_directories)} total directories across all levels")
+
+            # Step 2: Collect root-level files (always included)
             root_result = await obs.list_with_delimiter_async(default_store, prefix=path_prefix)
-
-            # Add root-level files (always included)
             root_files = []
             for obj_meta in root_result.get("objects", []):
                 location = obj_meta.get("path", "")
@@ -518,30 +543,35 @@ async def list_product_files(
             all_files.extend(root_files)
             logger.info(f"Found {len(root_files)} root-level files")
 
-            # Get subdirectories
-            subdirs = root_result.get("common_prefixes", [])
-            logger.info(f"Found {len(subdirs)} top-level subdirectories")
-
-            # For each subdirectory, do limited recursive listing
-            # Distribute max_files budget across subdirectories
+            # Step 3: Sample files from each directory (breadth-first to ensure coverage)
+            # Distribute budget across all discovered directories
             remaining_budget = max_files - len(root_files)
-            files_per_dir = max(50, remaining_budget // max(len(subdirs), 1)) if subdirs else 0
+            files_per_dir = (
+                max(5, remaining_budget // max(len(all_directories), 1)) if all_directories else 0
+            )
+            logger.info(
+                f"Sampling {files_per_dir} files per directory from {len(all_directories)} directories"
+            )
 
-            for subdir_prefix in subdirs:
+            for dir_prefix in all_directories[:100]:  # Limit to first 100 dirs to avoid timeout
                 if len(all_files) >= max_files:
                     break
 
-                # Use flat recursive listing for this subdirectory
-                stream = obs.list(default_store, prefix=subdir_prefix, chunk_size=1000)
+                # Sample a few files from this directory (not recursive - just this level)
+                try:
+                    dir_result = await obs.list_with_delimiter_async(
+                        default_store, prefix=dir_prefix
+                    )
+                    sampled = 0
+                    for obj_meta in dir_result.get("objects", []):
+                        if sampled >= files_per_dir:
+                            break
 
-                subdir_files = []
-                async for batch in stream:
-                    for obj_meta in batch:
                         location = obj_meta.get("path", "")
                         if location.endswith("/"):
                             continue
 
-                        subdir_files.append(
+                        all_files.append(
                             {
                                 "key": location,
                                 "s3_uri": f"s3://{DEFAULT_BUCKET}/{location}",
@@ -551,20 +581,12 @@ async def list_product_files(
                                 "etag": obj_meta.get("e_tag"),
                             }
                         )
+                        sampled += 1
 
-                        if len(subdir_files) >= files_per_dir:
-                            break
+                except Exception as e:
+                    logger.warning(f"Error sampling files from {dir_prefix}: {e}")
 
-                    if len(subdir_files) >= files_per_dir:
-                        break
-
-                all_files.extend(subdir_files)
-                logger.info(f"Added {len(subdir_files)} files from {subdir_prefix}")
-
-                if len(all_files) >= max_files:
-                    break
-
-            # Build tree structure
+            # Build tree structure from files
             tree_dict = {}
             total_size = 0
 
@@ -587,6 +609,25 @@ async def list_product_files(
                 # Add file with metadata
                 filename = parts[-1]
                 current[filename] = {"size": size, "s3_uri": file_info["s3_uri"]}
+
+            # CRITICAL: Ensure ALL discovered directories appear in tree, even if no files collected
+            logger.info("Ensuring all discovered directories are in tree...")
+            for dir_prefix in all_directories:
+                relative_dir = dir_prefix[len(path_prefix) :].rstrip("/")
+                if not relative_dir:
+                    continue
+
+                parts = relative_dir.split("/")
+                current = tree_dict
+                for part in parts:
+                    if part not in current:
+                        current[part] = {}  # Empty directory (no files collected yet)
+                    elif isinstance(current[part], dict) and "size" in current[part]:
+                        # Collision: this is a file, not a directory - skip
+                        break
+                    current = current[part]
+
+            logger.info(f"Tree built with {len(tree_dict)} root items (files + directories)")
 
             # Helper functions
             def format_size(bytes_size):

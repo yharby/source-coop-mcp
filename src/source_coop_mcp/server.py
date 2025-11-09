@@ -488,17 +488,53 @@ async def list_product_files(
 
         if show_tree:
             # Directory-first tree discovery: Guarantees ALL directories are visible
+            # Step 0: Fast streaming pass to get ACCURATE total size and file count
             # Step 1: Recursively discover complete directory structure
             # Step 2: Sample files from each directory branch
             logger.info("Using directory-first tree discovery for complete visibility")
 
+            # STEP 0: Fast streaming pass for accurate totals (doesn't store metadata)
+            logger.info("Step 0: Calculating accurate product totals via streaming...")
+            actual_total_size = 0
+            actual_file_count = 0
+
+            try:
+                # Stream through ALL files to get accurate totals without storing metadata
+                stream = default_store.list_async(prefix=path_prefix)
+
+                # Process in chunks for efficiency
+                async for chunk in stream:
+                    for obj_meta in chunk:
+                        path = obj_meta.get("path", "")
+                        # Skip directory markers
+                        if not path.endswith("/"):
+                            actual_file_count += 1
+                            actual_total_size += obj_meta.get("size", 0)
+
+                logger.info(
+                    f"Product totals: {actual_file_count:,} files, "
+                    f"{actual_total_size / (1024**3):.2f} GB"
+                )
+            except Exception as e:
+                logger.warning(f"Could not calculate accurate totals: {e}")
+                # Continue with sampling-based totals as fallback
+                actual_total_size = None
+                actual_file_count = None
+
             all_files = []
             all_directories = []  # Track ALL discovered directories
+            directory_file_counts = {}  # Track how many files in each directory
+            trimmed_info = {}  # Track where we trimmed (for tree annotations)
 
-            # Recursive function to discover ALL directories at all levels
-            async def discover_directories(prefix_to_scan, max_depth=5, current_depth=0):
-                """Recursively discover all directories using delimiter listing"""
-                if current_depth >= max_depth:
+            # Recursive function to discover directories with limits
+            async def discover_directories(
+                prefix_to_scan, max_depth=3, current_depth=0, max_total_dirs=150
+            ):
+                """
+                Recursively discover directories using delimiter listing.
+                Stops early if max_total_dirs reached to avoid timeouts on huge datasets.
+                """
+                if current_depth >= max_depth or len(all_directories) >= max_total_dirs:
                     return
 
                 try:
@@ -509,17 +545,25 @@ async def list_product_files(
                     # Get subdirectories at this level
                     subdirs = result.get("common_prefixes", [])
                     for subdir in subdirs:
+                        if len(all_directories) >= max_total_dirs:
+                            logger.info(
+                                f"Reached max directory limit ({max_total_dirs}), stopping discovery"
+                            )
+                            return
+
                         all_directories.append(subdir)
                         # Recurse into subdirectory to discover its children
-                        await discover_directories(subdir, max_depth, current_depth + 1)
+                        await discover_directories(
+                            subdir, max_depth, current_depth + 1, max_total_dirs
+                        )
 
                 except Exception as e:
                     logger.warning(f"Error discovering directories in {prefix_to_scan}: {e}")
 
-            # Step 1: Discover ALL directories recursively (fast with delimiter listing)
-            logger.info("Step 1: Discovering all directories...")
-            await discover_directories(path_prefix, max_depth=5)
-            logger.info(f"Discovered {len(all_directories)} total directories across all levels")
+            # Step 1: Discover directories (limited depth and count to avoid timeouts)
+            logger.info("Step 1: Discovering directories (max depth=3, max count=150)...")
+            await discover_directories(path_prefix, max_depth=3, max_total_dirs=150)
+            logger.info(f"Discovered {len(all_directories)} directories")
 
             # Step 2: Collect root-level files (always included)
             root_result = await obs.list_with_delimiter_async(default_store, prefix=path_prefix)
@@ -543,17 +587,21 @@ async def list_product_files(
             all_files.extend(root_files)
             logger.info(f"Found {len(root_files)} root-level files")
 
-            # Step 3: Sample files from each directory (breadth-first to ensure coverage)
-            # Distribute budget across all discovered directories
+            # Step 3: Sample files from deepest directories first (most representative)
+            # Sort directories by depth (deepest first) to show actual data files
+            all_directories.sort(key=lambda d: d.count("/"), reverse=True)
+
             remaining_budget = max_files - len(root_files)
             files_per_dir = (
-                max(5, remaining_budget // max(len(all_directories), 1)) if all_directories else 0
+                max(3, remaining_budget // max(len(all_directories), 1)) if all_directories else 0
             )
+            # Limit sampling to max 80 directories to avoid excessive API calls
+            dirs_to_sample = min(80, len(all_directories))
             logger.info(
-                f"Sampling {files_per_dir} files per directory from {len(all_directories)} directories"
+                f"Sampling {files_per_dir} files per directory from {dirs_to_sample} deepest directories"
             )
 
-            for dir_prefix in all_directories[:100]:  # Limit to first 100 dirs to avoid timeout
+            for dir_prefix in all_directories[:dirs_to_sample]:
                 if len(all_files) >= max_files:
                     break
 
@@ -562,6 +610,15 @@ async def list_product_files(
                     dir_result = await obs.list_with_delimiter_async(
                         default_store, prefix=dir_prefix
                     )
+
+                    # Count total files in this directory
+                    total_files_in_dir = sum(
+                        1
+                        for obj in dir_result.get("objects", [])
+                        if not obj.get("path", "").endswith("/")
+                    )
+                    directory_file_counts[dir_prefix] = total_files_in_dir
+
                     sampled = 0
                     for obj_meta in dir_result.get("objects", []):
                         if sampled >= files_per_dir:
@@ -583,8 +640,24 @@ async def list_product_files(
                         )
                         sampled += 1
 
+                    # Track if files were trimmed in this directory
+                    if sampled < total_files_in_dir:
+                        trimmed_info[dir_prefix] = {
+                            "total_files": total_files_in_dir,
+                            "sampled_files": sampled,
+                            "trimmed_files": total_files_in_dir - sampled,
+                        }
+
                 except Exception as e:
                     logger.warning(f"Error sampling files from {dir_prefix}: {e}")
+
+            # Track if directories were not sampled
+            if dirs_to_sample < len(all_directories):
+                trimmed_info["_directories_trimmed"] = {
+                    "total_dirs": len(all_directories),
+                    "sampled_dirs": dirs_to_sample,
+                    "trimmed_dirs": len(all_directories) - dirs_to_sample,
+                }
 
             # Build tree structure from files
             tree_dict = {}
@@ -911,11 +984,9 @@ async def list_product_files(
                     total_size_str = format_size(size_range["total"])
                     count = size_range["count"]
 
-                    full_path = f"{path_prefix}{current_path}".rstrip("/")
-                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{full_path}/"
                     lines.append(
                         f"{prefix}├── {num_pattern} ({count} files, {min_size_str} - {max_size_str}, "
-                        f"total: {total_size_str}) → {dir_s3_path}"
+                        f"total: {total_size_str})"
                     )
 
                     # Show any non-numbered files in the same directory
@@ -924,7 +995,7 @@ async def list_product_files(
                             base_name = name.rsplit(".", 1)[0] if "." in name else name
                             if not base_name.isdigit():
                                 size_str = format_size(value["size"])
-                                lines.append(f"{prefix}├── {name} ({size_str}) → {value['s3_uri']}")
+                                lines.append(f"{prefix}├── {name} ({size_str})")
                         elif isinstance(value, dict) and "size" not in value:
                             # Show subdirectories (no S3 path - redundant with tree structure)
                             item_path = f"{current_path}/{name}" if current_path else name
@@ -937,9 +1008,7 @@ async def list_product_files(
                 is_date_pattern, dates_summary = detect_date_directories(node)
                 if is_date_pattern and dates_summary:
                     # Show summarized date directories
-                    full_path = f"{path_prefix}{current_path}".rstrip("/")
-                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{full_path}/"
-                    lines.append(f"{prefix}├── {dates_summary} → {dir_s3_path}")
+                    lines.append(f"{prefix}├── {dates_summary}")
 
                     # Get first date directory to show structure underneath
                     date_dirs = sorted(
@@ -971,18 +1040,18 @@ async def list_product_files(
                     total_size_str = format_size(size_range["total"])
                     count = size_range["count"]
 
-                    full_path = f"{path_prefix}{current_path}".rstrip("/")
-                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{full_path}/"
                     lines.append(
                         f"{prefix}├── {pattern_desc} ({count} files, {min_size_str} - {max_size_str}, "
-                        f"total: {total_size_str}) → {dir_s3_path}"
+                        f"total: {total_size_str})"
                     )
 
-                    # Show sample files with full S3 paths for LLM awareness
+                    # Show sample filenames (path implicit from tree)
                     if sample_files:
                         lines.append(f"{prefix}│   Sample files:")
-                        for s3_uri in sample_files[:2]:  # Show 2 full examples
-                            lines.append(f"{prefix}│     • {s3_uri}")
+                        for s3_uri in sample_files[:2]:  # Show 2 examples
+                            # Extract just the filename from the S3 URI
+                            filename = s3_uri.split("/")[-1]
+                            lines.append(f"{prefix}│     • {filename}")
 
                     # Show any non-pattern files or subdirectories
                     for name, value in items:
@@ -1001,9 +1070,7 @@ async def list_product_files(
                     item_path = (
                         f"{current_path}/{pattern_summary}" if current_path else pattern_summary
                     )
-                    full_path = f"{path_prefix}{current_path}".rstrip("/")
-                    dir_s3_path = f"s3://{DEFAULT_BUCKET}/{full_path}/"
-                    lines.append(f"{prefix}├── {pattern_summary}/ [partitioned] → {dir_s3_path}")
+                    lines.append(f"{prefix}├── {pattern_summary}/ [partitioned]")
 
                     # Get first item to show structure underneath
                     first_key = items[0][0]
@@ -1028,22 +1095,53 @@ async def list_product_files(
                     item_path = f"{current_path}/{name}" if current_path else name
 
                     if isinstance(value, dict) and "size" in value:
-                        # File - show S3 URI for direct access
+                        # File - just name and size (path implicit from tree)
                         size_str = format_size(value["size"])
-                        lines.append(f"{prefix}{connector}{name} ({size_str}) → {value['s3_uri']}")
+                        lines.append(f"{prefix}{connector}{name} ({size_str})")
                     else:
-                        # Directory - no S3 path (redundant with tree structure, saves tokens)
+                        # Directory - just name (path implicit from tree)
                         lines.append(f"{prefix}{connector}{name}/")
 
                         # Recurse into subdirectory
-                        lines.extend(build_tree_lines(value, prefix + extension, item_path))
+                        subdir_lines = build_tree_lines(value, prefix + extension, item_path)
+                        lines.extend(subdir_lines)
+
+                        # Check if this directory had files trimmed
+                        full_dir_path = f"{path_prefix}{item_path}/"
+                        if full_dir_path in trimmed_info:
+                            trim_data = trimmed_info[full_dir_path]
+                            trimmed_count = trim_data["trimmed_files"]
+                            lines.append(
+                                f"{prefix}{extension}... {trimmed_count:,} more files not shown"
+                            )
 
                 return lines
 
-            # Build tree string
+            # Build tree string with accurate totals header
             root_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}"
             tree_lines = [root_path]
+
+            # Add product totals header if we have accurate data
+            if actual_total_size is not None and actual_file_count is not None:
+                total_size_human = format_size(actual_total_size)
+                tree_lines.append(
+                    f"📊 Product totals: {actual_file_count:,} files, {total_size_human}"
+                )
+                if len(all_files) < actual_file_count:
+                    tree_lines.append(f"📝 Showing: {len(all_files):,} sampled files in tree below")
+                tree_lines.append("")  # Blank line for readability
+
             tree_lines.extend(build_tree_lines(tree_dict))
+
+            # Add note about trimmed directories at the end
+            if "_directories_trimmed" in trimmed_info:
+                trim_data = trimmed_info["_directories_trimmed"]
+                tree_lines.append("")
+                tree_lines.append(
+                    f"⚠️  {trim_data['trimmed_dirs']:,} directories not shown "
+                    f"(sampled {trim_data['sampled_dirs']:,} of {trim_data['total_dirs']:,})"
+                )
+
             tree_str = "\n".join(tree_lines)
 
             # Get directory list
@@ -1070,12 +1168,21 @@ async def list_product_files(
             return {
                 "tree": tree_str,
                 "stats": {
-                    "total_files": len(all_files),
+                    # Use ACCURATE totals from streaming pass (not sampled)
+                    "total_files": actual_file_count
+                    if actual_file_count is not None
+                    else len(all_files),
                     "total_directories": len(directories),
-                    "total_size": total_size,
-                    "total_size_human": format_size(total_size),
-                    "truncated": len(all_files) >= max_files,
-                    "note": "Tree mode: file list omitted to save tokens. Parse tree for file paths and sizes.",
+                    "total_size": actual_total_size
+                    if actual_total_size is not None
+                    else total_size,
+                    "total_size_human": format_size(actual_total_size)
+                    if actual_total_size is not None
+                    else format_size(total_size),
+                    "sampled_files": len(all_files),
+                    "is_sampled": actual_file_count is not None
+                    and len(all_files) < actual_file_count,
+                    "note": "Tree mode: file list omitted to save tokens. Parse tree for file paths and sizes. Stats show ACCURATE totals for entire product.",
                 },
             }
 

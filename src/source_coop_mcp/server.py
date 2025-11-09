@@ -885,10 +885,9 @@ async def list_product_files(
                                 size_str = format_size(value["size"])
                                 lines.append(f"{prefix}├── {name} ({size_str}) → {value['s3_uri']}")
                         elif isinstance(value, dict) and "size" not in value:
-                            # Show subdirectories
+                            # Show subdirectories (no S3 path - redundant with tree structure)
                             item_path = f"{current_path}/{name}" if current_path else name
-                            dir_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{item_path}/"
-                            lines.append(f"{prefix}├── {name}/ → {dir_path}")
+                            lines.append(f"{prefix}├── {name}/")
                             lines.extend(build_tree_lines(value, prefix + "│   ", item_path))
 
                     return lines
@@ -947,10 +946,9 @@ async def list_product_files(
                     # Show any non-pattern files or subdirectories
                     for name, value in items:
                         if isinstance(value, dict) and "size" not in value:
-                            # Show subdirectories
+                            # Show subdirectories (no S3 path - redundant with tree structure)
                             item_path = f"{current_path}/{name}" if current_path else name
-                            dir_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{item_path}/"
-                            lines.append(f"{prefix}├── {name}/ → {dir_path}")
+                            lines.append(f"{prefix}├── {name}/")
                             lines.extend(build_tree_lines(value, prefix + "│   ", item_path))
 
                     return lines
@@ -989,13 +987,12 @@ async def list_product_files(
                     item_path = f"{current_path}/{name}" if current_path else name
 
                     if isinstance(value, dict) and "size" in value:
-                        # File
+                        # File - show S3 URI for direct access
                         size_str = format_size(value["size"])
                         lines.append(f"{prefix}{connector}{name} ({size_str}) → {value['s3_uri']}")
                     else:
-                        # Directory
-                        dir_s3_path = f"s3://{DEFAULT_BUCKET}/{path_prefix}{item_path}/"
-                        lines.append(f"{prefix}{connector}{name}/ → {dir_s3_path}")
+                        # Directory - no S3 path (redundant with tree structure, saves tokens)
+                        lines.append(f"{prefix}{connector}{name}/")
 
                         # Recurse into subdirectory
                         lines.extend(build_tree_lines(value, prefix + extension, item_path))

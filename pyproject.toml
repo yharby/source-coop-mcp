@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastmcp>=2.12.5",
+    "fastmcp>=2.13.0",
     "httpx>=0.28.1",
     "obstore>=0.8.2",
 ]
@@ -41,7 +41,7 @@ source-coop-mcp = "source_coop_mcp.server:main"
 dev = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
-    "ruff>=0.14.1",
+    "ruff>=0.14.4",
     "pre-commit>=4.3.0",
 ]
 
@@ -55,6 +55,6 @@ target-version = "py311"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.14.1",
+    "ruff>=0.14.4",
     "pre-commit>=4.3.0",
 ]
